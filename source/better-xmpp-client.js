@@ -11,7 +11,7 @@
   const names = () => community ? schema.channels(community).map(channel => channel.name) : [];
   const COMMUNITY_KEY = 'better_cherri_xmpp_community_v1', IDS_KEY = 'better_cherri_xmpp_event_ids_v1';
   const NS = { client: 'jabber:client', register: 'jabber:iq:register', data: 'jabber:x:data', muc: 'http://jabber.org/protocol/muc', user: 'http://jabber.org/protocol/muc#user', owner: 'http://jabber.org/protocol/muc#owner', admin: 'http://jabber.org/protocol/muc#admin', disco: 'http://jabber.org/protocol/disco#info', mam: 'urn:xmpp:mam:2', rsm: 'http://jabber.org/protocol/rsm', forward: 'urn:xmpp:forward:0', delay: 'urn:xmpp:delay', sid: 'urn:xmpp:sid:0', reply: 'urn:xmpp:reply:0', correct: 'urn:xmpp:message-correct:0', reactions: 'urn:xmpp:reactions:0', retract: 'urn:xmpp:message-retract:1', chat: 'http://jabber.org/protocol/chatstates' };
-  let connection = null, session = null, community = null, connecting = false, creating = null, initializedFor = '', nick = '';
+  let connection = null, session = null, community = null, connecting = false, creating = null, initializedFor = '', lastAccessStatus = '', nick = '';
   const listeners = new Set(), rooms = new Map(), eventIndex = new Map(), aliases = new Map(), reserved = new Map(), pendingIQ = new Set(), pendingEcho = new Map();
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   function uuid() { if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID().replace(/-/g,'');if(globalThis.crypto?.getRandomValues){const bytes=globalThis.crypto.getRandomValues(new Uint8Array(16));return Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');}throw error('Secure random numbers are unavailable in this browser.','BETTER_XMPP_CRYPTO',503); }
@@ -37,16 +37,26 @@
   const attr = (element, name) => element?.getAttribute?.(name) || '';
   function stanzaError(stanza) { const e = child(stanza, 'error'), condition = children(e).find(value => local(value) !== 'text'); const code = local(condition) || 'request-failed'; return error(text(child(e, 'text')) || 'The chat server rejected this operation (' + code + ').', code, ['forbidden','not-authorized','registration-required'].includes(code) ? 403 : code === 'conflict' ? 409 : code === 'resource-constraint' ? 429 : code === 'feature-not-implemented' ? 501 : 400); }
   const normalizeCommunity = value => schema.normalize(value);
+  function migrateDefaultOwner(selected) {
+    // A release may correct its designated account without moving any history.
+    // This metadata change never grants XMPP membership or server ownership.
+    if (selected.legacy || !Array.isArray(globalThis.__BETTER_XMPP_PREVIOUS_DEFAULT_OWNERS__) || !globalThis.__BETTER_XMPP_PREVIOUS_DEFAULT_OWNERS__.includes(selected.ownerJid)) return selected;
+    let current;
+    try { current = normalizeCommunity(globalThis.__BETTER_XMPP_DEFAULT_COMMUNITY__); } catch { return selected; }
+    const keys = Object.keys(selected.rooms);
+    if (current.legacy || selected.namespace !== current.namespace || keys.length !== Object.keys(current.rooms).length || !keys.every(name => selected.rooms[name] === current.rooms[name])) return selected;
+    return { ...selected, ownerJid: current.ownerJid };
+  }
   const getCommunity = () => community ? normalizeCommunity(community) : null;
   function roomId(name) { name=normalizeRoomName(name); if (!community?.rooms?.[name]) throw error('That Better Cherri room is not configured.', 'BETTER_ROOM_NOT_CONFIGURED', 404); return community.rooms[name]; }
   const roomName = jid => names().find(name => community?.rooms?.[name] === bare(jid));
   function room(name) { name=normalizeRoomName(name); roomId(name); if (!rooms.has(name)) rooms.set(name, { joined: false, joining: null, own: null, occupants: new Map(), events: new Map(), refs: new Map(), features: new Set(), verifiedAt: 0 }); return rooms.get(name); }
   function setCommunity(value) {
     if(creating)throw error('Wait for this community’s private rooms to finish initializing before switching communities.','BETTER_XMPP_BUSY',409);
-    const selected = normalizeCommunity(typeof value === 'string' ? JSON.parse(value) : value);
+    const selected = migrateDefaultOwner(normalizeCommunity(typeof value === 'string' ? JSON.parse(value) : value));
     if (connection?.authenticated) for (const name of rooms.keys()) if (rooms.get(name).joined) connection.send(xml('presence', { xmlns: NS.client, to: roomId(name) + '/' + nick, type: 'unavailable' }));
     for (const data of rooms.values()) data.joining?.reject(error('The selected community changed.'));
-    rooms.clear(); eventIndex.clear(); initializedFor=''; community = selected; write(COMMUNITY_KEY, getCommunity()); emit({ type: 'community', community: getCommunity() }); return getCommunity();
+    rooms.clear(); eventIndex.clear(); initializedFor=''; lastAccessStatus=''; community = selected; write(COMMUNITY_KEY, getCommunity()); emit({ type: 'community', community: getCommunity() }); return getCommunity();
   }
   function user(id, display) { return { id, username: id, display: display || String(id).split('@')[0], pfp: '', avatarUrl: '', bio: '', badges: [], roles: [], isAdmin: false, isMod: false, isOwner: false, allowMessages: false, activity: null }; }
   async function me() { requireConnection(); return user(session.userId); }
@@ -64,7 +74,7 @@
     });
   }
   function clearConnection(reason) {
-    session = null; initializedFor='';
+    session = null; initializedFor=''; lastAccessStatus='';
     for (const cancel of [...pendingIQ]) cancel();
     for (const pending of pendingEcho.values()) { clearTimeout(pending.timer); pending.reject(error(reason || 'The chat connection closed.', 'BETTER_XMPP_CONNECTION', 503)); } pendingEcho.clear();
     eventIndex.clear();
@@ -208,11 +218,19 @@
         community.ownerJid=session.userId;
       }
       if(community.ownerJid!==session.userId)throw error('Only the designated Better Cherri community owner can initialize its channels.','forbidden',403);
+      // Verify every existing address before creating any missing channel. A
+      // corrected owner label cannot create a partly separate community around
+      // rooms that the server still assigns to somebody else.
+      const missing = [];
       for (const name of names()) {
+        try { await disco(name); }
+        catch (failure) { if (failure.code === 'item-not-found') { missing.push(name); continue; } throw failure; }
+        const existing = await verifyRoom(name, true);
+        if (existing.own?.affiliation !== 'owner') throw error('The planned #' + name + ' room belongs to another owner. It will not be overwritten.', 'BETTER_ROOM_OWNER_MISMATCH', 403);
+      }
+      for (const name of missing) {
         let newlyCreated = false;
         try {
-          try { await disco(name); const existing=await verifyRoom(name,true);if(existing.own?.affiliation!=='owner')throw error('The planned #'+name+' room belongs to another owner. It will not be overwritten.','BETTER_ROOM_OWNER_MISMATCH',403);continue; }
-          catch(failure){if(failure.code!=='item-not-found')throw failure;}
           newlyCreated = (await joinRoom(name,true)).created;
           if (!newlyCreated) throw error('The planned room address already exists. Its owner must verify it.', 'BETTER_ROOM_CONFLICT', 409);
           await configurePrivate(name); await verifyRoom(name, true);
@@ -232,7 +250,35 @@
   async function assertRoomAccess(name){name=normalizeRoomName(name);await verifyRoom(name);return name;}
   async function joinCommunity() { requireConnection(); const results=[]; for (const name of names()) try { await verifyRoom(name, true); results.push({name,joined:true}); } catch(failure) { results.push({name,joined:false,error:failure.message,code:failure.code}); } emit({type:'membership',results}); return results; }
   async function listCategories(){return schema.categories();}
-  async function listChannels() { requireConnection();try{await enterCommunity();}catch(failure){emit({type:'status',connected:true,error:failure.message});}const list=community?schema.channels(community):[];for(const channel of list)try{const data=await verifyRoom(channel.name);Object.assign(channel,{locked:false,canPost:channel.categoryId!==1||['owner','admin'].includes(data.own?.affiliation),canRead:true,joined:true});}catch{}return list; }
+  function accessFailure(failure) {
+    const code = String(failure?.code || 'BETTER_XMPP_ERROR'), owner = community?.ownerJid || 'the community owner';
+    if (code === 'item-not-found') return { accessState: 'not-created', accessErrorCode: code, accessMessage: 'This Better Cherri channel has not been created yet. Sign in as ' + owner + ' to initialize the community.' };
+    if (['forbidden','registration-required','not-authorized'].includes(code)) return { accessState: 'invitation-required', accessErrorCode: code, accessMessage: 'This account (' + (session?.userId || 'your signed-in account') + ') needs an invitation from ' + owner + '. Open Invites & settings after the owner invites your chat address.' };
+    return { accessState: code === 'BETTER_ROOM_NOT_PRIVATE' || code === 'BETTER_ROOM_UNSUPPORTED' ? 'privacy-error' : 'unavailable', accessErrorCode: code, accessMessage: String(failure?.message || 'The chat server could not confirm access to this channel. Try again.') };
+  }
+  function reportAccessStatus(message) {
+    if (message === lastAccessStatus) return;
+    lastAccessStatus = message;
+    emit({ type: 'status', connected: !!connection?.authenticated, error: message || null });
+  }
+  async function listChannels() {
+    requireConnection(); let setupFailure = null;
+    try { await enterCommunity(); } catch (failure) { setupFailure = failure; }
+    const list = community ? schema.channels(community) : [];
+    for (const channel of list) try {
+      const data = await verifyRoom(channel.name);
+      Object.assign(channel, { locked: false, canPost: channel.categoryId !== 1 || ['owner','admin'].includes(data.own?.affiliation), canRead: true, joined: true, accessState: 'joined', accessErrorCode: null, accessMessage: null });
+    } catch (failure) { Object.assign(channel, accessFailure(failure)); }
+    let message = setupFailure?.message || '';
+    if (!message && list.length && list.every(channel => !channel.canRead)) {
+      const problem = list.find(channel => !['not-created','invitation-required'].includes(channel.accessState));
+      if (problem) message = problem.accessMessage;
+      else if (list.every(channel => channel.accessState === 'not-created')) message = 'These Better Cherri channels have not been initialized. Sign in as ' + community.ownerJid + ' to create them.';
+      else if (list.every(channel => channel.accessState === 'invitation-required')) message = list[0].accessMessage;
+      else message = 'The community owner (' + community.ownerJid + ') must finish setting up the channels and invite this account (' + session.userId + '). Open Invites & settings to check again.';
+    }
+    reportAccessStatus(message); return list;
+  }
   async function affiliations(name, affiliation) { const result=await iq(xml('iq',{xmlns:NS.client,type:'get',to:roomId(name)},[xml('query',{xmlns:NS.admin},[xml('item',{affiliation})])])); return descendants(child(result,'query',NS.admin),'item').map(item=>bare(attr(item,'jid'))).filter(validJid); }
   async function listMembers() {
     requireConnection(); const members=new Map();
@@ -349,7 +395,7 @@
   async function typing(name){name=normalizeRoomName(name);await verifyRoom(name);connection.send(xml('message',{xmlns:NS.client,type:'groupchat',to:roomId(name)},[xml('composing',{xmlns:NS.chat})]));return{ok:true};}
   async function search(){throw error('This server does not provide full-text archive search through this version.','BETTER_SEARCH_UNSUPPORTED',501);}
   function subscribe(listener){if(typeof listener!=='function')throw error('A chat subscription callback is required.');listeners.add(listener);return()=>listeners.delete(listener);}
-  for(const configured of [globalThis.__BETTER_XMPP_COMMUNITY__,read(COMMUNITY_KEY),globalThis.__BETTER_XMPP_DEFAULT_COMMUNITY__]){if(!configured)continue;try{community=normalizeCommunity(configured);break;}catch{}}
+  for(const configured of [globalThis.__BETTER_XMPP_COMMUNITY__,read(COMMUNITY_KEY),globalThis.__BETTER_XMPP_DEFAULT_COMMUNITY__]){if(!configured)continue;try{community=migrateDefaultOwner(normalizeCommunity(configured));break;}catch{}}
   try{for(const item of read(IDS_KEY)||[])if(Array.isArray(item)&&typeof item[0]==='string'&&Number.isSafeInteger(item[1])&&item[1]>0&&!reserved.has(item[1])){aliases.set(item[0],item[1]);reserved.set(item[1],item[0]);}}catch{}
   globalThis.__betterXmpp=Object.freeze({SERVICE,DOMAIN,MUC,ROOM_NAMES:schema.ROOM_NAMES,normalizeRoomName,assertRoomAccess,login,register,getRegistrationInfo,restore,whoami:restore,logout,getSession,me,createCommunity,enterCommunity,ensureCommunity:enterCommunity,setCommunity,getCommunity,exportCommunity:()=>JSON.stringify(getCommunity(),null,2),joinCommunity,listCategories,categories:listCategories,listChannels,channels:listChannels,listMembers,members:listMembers,invite,getMessages,messages:getMessages,sendMessage,send:sendMessage,edit,remove,react,typing,search,subscribe,getCachedMessage});
 })();

@@ -263,6 +263,8 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   f.serverEvent({type:'status',connected:true,error:'The server could not save the private room configuration.'});
   assert.equal(nodes(f,'aside').length,1,'A fresh failure after recovery is visible.');
   click(btn(f,'Invites & settings'));assert.equal(dialog.open,true);
+  f.serverEvent({type:'status',connected:true,error:null});assert.equal(nodes(f,'aside').length,0,'Successful membership recovery clears stale room-access alerts.');
+  f.serverEvent({type:'status',connected:true,error:'A fresh access failure.'});assert.equal(nodes(f,'aside').length,1);
   f.serverEvent({type:'session',session:null});assert.equal(nodes(f,'aside').length,0);
   f.serverEvent({type:'status',connected:false,error:'Sign in again to reconnect.'});
   assert.equal(nodes(f,'aside').length,1);stop();assert.equal(f.listeners.size,0);

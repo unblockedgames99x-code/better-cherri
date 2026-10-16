@@ -20,16 +20,20 @@ function excludePrivateSessions(input) {
 function patchChatLayout(input) {
   let source = input;
   const privateEmptyText = 'This channel is private. Ask the Better Cherri owner for an invitation, then accept it in Invites & settings.';
+  const privateEmpty = '(Jr?.accessMessage||' + JSON.stringify(privateEmptyText) + ')';
   const oldEmpty = String.raw`children:JB?"No messages yet \u2014 say hi!":"Original Cherri rooms are hidden. Select a Better Cherri room when one is available."`;
-  if (!source.includes(privateEmptyText)) {
+  source = source.replace('Jr?.canRead===!1?' + JSON.stringify(privateEmptyText) + ':', 'Jr?.canRead===!1?' + privateEmpty + ':');
+  if (!source.includes(privateEmpty)) {
     if (source.split(oldEmpty).length !== 2) throw new Error('Original Cherri empty channel notice anchor changed.');
-    source = source.replace(oldEmpty, 'children:globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="xmpp"&&Jr?.canRead===!1?' + JSON.stringify(privateEmptyText) + ':' + oldEmpty.slice('children:'.length));
+    source = source.replace(oldEmpty, 'children:globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="xmpp"&&Jr?.canRead===!1?' + privateEmpty + ':' + oldEmpty.slice('children:'.length));
   }
   const privateComposerText = 'Invitation required. Open Invites & settings to accept your room invitations.';
+  const privateComposer = '(Jr?.accessMessage||' + JSON.stringify(privateComposerText) + ')';
   const oldComposer = 'children:Jr?.locked?(0,m.jsxs)(m.Fragment,';
-  if (!source.includes(privateComposerText)) {
+  source = source.replace('Jr?.canRead===!1?' + JSON.stringify(privateComposerText) + ':', 'Jr?.canRead===!1?' + privateComposer + ':');
+  if (!source.includes(privateComposer)) {
     if (source.split(oldComposer).length !== 2) throw new Error('Original Cherri locked composer notice anchor changed.');
-    source = source.replace(oldComposer, 'children:globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="xmpp"&&Jr?.canRead===!1?' + JSON.stringify(privateComposerText) + ':' + oldComposer.slice('children:'.length));
+    source = source.replace(oldComposer, 'children:globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="xmpp"&&Jr?.canRead===!1?' + privateComposer + ':' + oldComposer.slice('children:'.length));
   }
   const oldChannelIcon = 'children:[sA.viewRoleIds&&sA.viewRoleIds.length>0?';
   const privateChannelIcon = 'children:[globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="xmpp"&&sA.canRead===!1?(0,m.jsx)(At,{size:14,className:"shrink-0"}):sA.viewRoleIds&&sA.viewRoleIds.length>0?';

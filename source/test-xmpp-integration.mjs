@@ -34,12 +34,14 @@ const privateNotice = source.indexOf('This channel is private. Ask the Better Ch
 const privateNoticeStart = source.lastIndexOf('children:', privateNotice) + 'children:'.length;
 const privateNoticeEnd = source.indexOf('})', privateNotice);
 const noticeExpression = source.slice(privateNoticeStart, privateNoticeEnd);
-const evaluateNotice = (canRead, provider = 'xmpp') => vm.runInNewContext(noticeExpression, {__BETTER_CHERRI_CHAT_PROVIDER__: provider, Jr: {canRead}, JB: true});
+const evaluateNotice = (canRead, provider = 'xmpp', accessMessage) => vm.runInNewContext(noticeExpression, {__BETTER_CHERRI_CHAT_PROVIDER__: provider, Jr: {canRead, accessMessage}, JB: true});
 assert.match(evaluateNotice(false), /private.*invitation.*Invites & settings/);
 assert.equal(evaluateNotice(false).includes('No messages yet'), false, 'Denied private history must not appear to be an empty successful room.');
 assert.match(evaluateNotice(true), /No messages yet/);
 assert.match(evaluateNotice(false, 'native'), /No messages yet/, 'The private-access notice is limited to hosted Better Cherri.');
-assert.ok(source.includes('Jr?.canRead===!1?"Invitation required. Open Invites & settings to accept your room invitations.":Jr?.locked?'));
+assert.equal(evaluateNotice(false, 'xmpp', 'These rooms have not been created.'), 'These rooms have not been created.', 'Missing rooms display their actual diagnostic rather than a false invitation requirement.');
+assert.match(evaluateNotice(true, 'xmpp', 'Stale access failure'), /No messages yet/, 'Joined room content never shows stale denied-access metadata.');
+assert.ok(source.includes('Jr?.canRead===!1?(Jr?.accessMessage||"Invitation required. Open Invites & settings to accept your room invitations."):Jr?.locked?'));
 assert.ok(source.includes('sA.canRead===!1?(0,m.jsx)(At,{size:14,className:"shrink-0"}):sA.viewRoleIds'), 'Nonmember channels use the original lock icon without inventing roles.');
 assert.equal(patchXmppIntegration(source), source, 'Applying the XMPP patch twice must be idempotent.');
 assert.equal(patchXmppIntegration(patchMatrixIntegration(baseline)), source, 'The XMPP patch must accept an already Matrix-integrated bundle.');

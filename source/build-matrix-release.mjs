@@ -22,7 +22,7 @@ if(!args.includes('--launcher-only')) {
   const fallback='https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@main/app.js';
   const helper=makeDownloadHelperSource(fallback).replace(`make(${JSON.stringify(fallback)}, community)`,'make(betterReleaseUrl, community)');
   if(!helper.includes('make(betterReleaseUrl, community)'))throw new Error('Download helper source changed.');
-  const script=`/* Better Cherri 2.2.0; AGPL-3.0. Source and license in this repository. */
+  const script=`/* Better Cherri 2.2.1; AGPL-3.0. Source and license in this repository. */
 (()=>{'use strict';
 const loadedFrom=document.currentScript&&document.currentScript.src||'';
 const betterReleaseUrl=new RegExp(${JSON.stringify('^https://cdn[.]jsdelivr[.]net/gh/unblockedgames99x-code/better-cherri@(?:main|[a-f0-9]{40})/app[.]js$')}).test(loadedFrom)?loadedFrom:${JSON.stringify(fallback)};

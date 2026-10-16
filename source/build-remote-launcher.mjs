@@ -96,9 +96,10 @@ for (const file of scriptFiles) {
 }
 
 const setup = `
-window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'xmpp'?'2.2.0':chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
+window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'xmpp'?'2.2.1':chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
 window.__BETTER_CHERRI_CHAT_PROVIDER__=${jsonForScript(chatProvider)};
 window.__BETTER_XMPP_DEFAULT_COMMUNITY__=${jsonForScript(xmppDefaultCommunity)};
+window.__BETTER_XMPP_PREVIOUS_DEFAULT_OWNERS__=["test11124@yax.im"];
 window.__BETTER_CHERRI_P2P_ROOMS__=${jsonForScript(p2pRooms)};
 window.__BETTER_CHERRI_NATIVE_ORIGIN__=window.__BETTER_CHERRI_CHAT_PROVIDER__==="cherri"&&globalThis.origin===${jsonForScript(apiBase)};
 window.__BETTER_CHERRI_ASSETS__=${jsonForScript(assetBase)};

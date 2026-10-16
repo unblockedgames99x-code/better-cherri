@@ -14,12 +14,12 @@
   .bcm-account{min-height:65vh;display:grid;place-items:center;padding:28px 16px}.bcm-card{width:100%;max-width:390px}
   .bcm-root h2{font-size:20px;line-height:1.3;margin:0 0 8px;font-weight:700}.bcm-root p{margin:8px 0;color:var(--text,#c7aeb7)}
   .bcm-root form{display:grid;gap:12px;margin:20px 0 12px}.bcm-root label{display:grid;gap:5px;font-size:13px;color:var(--text,#c7aeb7)}
-  .bcm-root input,.bcm-root textarea{width:100%;background:var(--bg-2,#1b1016);color:var(--bright-text,#fff);border:1px solid var(--border,#ffc8d238);border-radius:12px;padding:10px 12px;outline-offset:3px}
+  .bcm-root input:not([type=checkbox]),.bcm-root textarea{width:100%;background:var(--bg-2,#1b1016);color:var(--bright-text,#fff);border:1px solid var(--border,#ffc8d238);border-radius:12px;padding:10px 12px;outline-offset:3px}
   .bcm-root textarea{min-height:115px;resize:vertical;font-family:ui-monospace,monospace;font-size:12px}
   .bcm-root button{border:1px solid var(--border,#ffc8d238);border-radius:12px;padding:9px 14px;background:var(--bg-2,#1b1016);color:var(--bright-text,#fff);cursor:pointer}
   .bcm-root button.bcm-primary{background:var(--accent,#f17496);color:var(--bg,#12090d);border-color:transparent;font-weight:600}.bcm-root button:disabled{opacity:.55;cursor:wait}
   .bcm-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.bcm-small{font-size:12px!important}.bcm-status{margin-top:12px;padding:10px 12px;border-radius:12px;white-space:pre-line;overflow-wrap:anywhere;background:var(--bg-2,#1b1016)}
-  .bcm-root label.bcm-check{display:flex;gap:9px;align-items:flex-start}.bcm-root .bcm-check input{width:16px;height:16px;margin-top:3px;padding:0;flex:none}.bcm-root .bcm-switch{margin-top:12px}
+  .bcm-root label.bcm-check{display:flex;gap:10px;align-items:flex-start;min-height:44px;padding:8px 0;cursor:pointer}.bcm-root .bcm-check input[type=checkbox]{appearance:auto;accent-color:var(--accent,#f17496);width:20px;height:20px;margin:0;padding:0;flex:0 0 20px;border:initial;border-radius:4px;background:transparent;box-shadow:none;cursor:pointer}.bcm-root .bcm-check input[type=checkbox]::before,.bcm-root .bcm-check input[type=checkbox]::after{content:none;display:none}.bcm-root .bcm-check input[type=checkbox]:focus-visible{outline:2px solid var(--accent,#f17496);outline-offset:3px}.bcm-root .bcm-switch{margin-top:12px}
   .bcm-status[hidden]{display:none}.bcm-status.bcm-error{color:#ffadb9;background:#3b101b}.bcm-community{display:contents}.bcm-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 40px);padding:0;border:1px solid var(--border,#ffc8d238);border-radius:18px;background:var(--bg-1,#170c12);color:var(--bright-text,#fff);overflow:auto}.bcm-dialog::backdrop{background:#000a;backdrop-filter:blur(3px)}.bcm-dialog-header{display:flex;gap:12px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border,#ffc8d238)}.bcm-dialog-header h2{flex:1}.bcm-dialog-body{padding:16px 20px}.bcm-dialog:not([open]){display:none}
   .bcm-community h2{font-size:15px;margin:0}.bcm-community summary{cursor:pointer;font-weight:600;color:var(--bright-text,#fff)}
   .bcm-community details>div{padding-top:10px}.bcm-community details{margin-top:8px}.bcm-community .bcm-identity{overflow-wrap:anywhere;margin:3px 0;font-size:12px}
@@ -164,7 +164,7 @@
     }
     function communityStatus(event) {
       if (!alive) return;
-      if (event?.type === 'community' || event?.type === 'session') {
+      if (event?.type === 'community' || event?.type === 'session' || (event?.type === 'status' && event.error === null)) {
         lastStatusError = visibleStatusError = ''; renderToast();
       } else if (event?.type === 'status' && event.error) {
         const message = errorText(event.error);
@@ -298,6 +298,7 @@
       const tools = el('div'); pane.append(tools);
       tools.className = 'bcm-tools';
       tools.append(el('p', 'These rooms are invite-only. Message history is saved on yax.im and follows the host’s retention settings.', {class: 'bcm-small'}));
+      if (ready && config.ownerJid) tools.append(el('p', 'Community owner: ' + config.ownerJid + '. This account initializes the channels and invites members.', {class: 'bcm-small bcm-break'}));
       if (!ready) tools.append(el('p', 'The shared Better Cherri rooms are being prepared. Ask the community owner for an invitation.', {class: 'bcm-small'}));
       if (ready) {
         const invitation = el('form', null, {class: 'bcm-invite', 'aria-label': 'Invite a member'});
