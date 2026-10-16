@@ -17,6 +17,8 @@ baseline = patchRoomView(baseline);
 const source = patchMatrixIntegration(baseline);
 new vm.Script(source, {filename: 'better-cherri-matrix-integration.js'});
 assert.equal(patchMatrixIntegration(source), source, 'Applying the Matrix patch twice must be idempotent.');
+const priorIntegration = source.replace('"better_cherri_remote_session_token","better_cherri_matrix_session_v1",', '"better_cherri_remote_session_token",');
+assert.equal(patchMatrixIntegration(priorIntegration), source, 'Reapplying the patch must also repair Matrix-session export exclusions in previously integrated bundles.');
 const segment = (start, end) => {
   const a = source.indexOf(start), b = source.indexOf(end, a + start.length);
   assert.ok(a >= 0 && b > a, 'Required original bundle anchors must exist: ' + start);
@@ -27,6 +29,27 @@ const cacheCode = segment('function Vi(){', 'function I0(');
 const streamCode = segment('function Y0(A,g){', 'function DeA(');
 const routeCode = segment('function d6({id:A}){', 'function kkA(');
 const fetchCode = segment('if(wpA(),!0){let A=window.fetch.bind(window);window.fetch=', 'var oRA=');
+const saveFilterCode = segment('kCA=new Set([', ',FCA=');
+const saveTransferCode = segment('function MCA(){', 'async function YCA(){');
+const saveStorage = new Map([
+  ['session_token', 'CHERRI_SECRET'],
+  ['better_cherri_matrix_session_v1', JSON.stringify({accessToken: 'MATRIX_SECRET', userId: '@tester:example.org'})],
+  ['ordinary_setting', 'keep this setting'],
+  ['better_cherri_matrix_community_v1', JSON.stringify({rooms: {'better-general': '!public-id:example.org'}})]
+]);
+const saveContext = {pG: 'cherri_settings_unpushed', c0: 'cherri_wallpaper',
+  localStorage: {get length() {return saveStorage.size;}, key: i => [...saveStorage.keys()][i] ?? null, getItem: key => saveStorage.get(key) ?? null, setItem: (key, value) => saveStorage.set(key, value)}
+};
+vm.runInNewContext('var kCA,RCA,sV;' + saveFilterCode + ';' + saveTransferCode, saveContext);
+assert.equal(saveContext.sV('better_cherri_matrix_session_v1'), true, 'Matrix credentials must be excluded from original Cherri cloud/export storage.');
+const exported = saveContext.MCA();
+assert.equal('better_cherri_matrix_session_v1' in exported, false);
+assert.equal('session_token' in exported, false);
+assert.equal(exported.ordinary_setting, 'keep this setting');
+assert.equal(JSON.stringify(exported).includes('MATRIX_SECRET'), false);
+saveContext.bCA({better_cherri_matrix_session_v1: 'ATTACKER_SESSION', ordinary_setting: 'restored setting'});
+assert.equal(saveStorage.get('better_cherri_matrix_session_v1').includes('MATRIX_SECRET'), true, 'A restored Cherri save must not overwrite Matrix credentials.');
+assert.equal(saveStorage.get('ordinary_setting'), 'restored setting');
 
 function eventTarget() {
   const listeners = new Map();

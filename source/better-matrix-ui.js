@@ -20,6 +20,7 @@
   .bcm-root button{border:1px solid var(--border,#ffc8d238);border-radius:12px;padding:9px 14px;background:var(--bg-2,#1b1016);color:var(--bright-text,#fff);cursor:pointer}
   .bcm-root button.bcm-primary{background:var(--accent,#f17496);color:var(--bg,#12090d);border-color:transparent;font-weight:600}.bcm-root button:disabled{opacity:.55;cursor:wait}
   .bcm-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.bcm-small{font-size:12px!important}.bcm-status{margin-top:12px;padding:10px 12px;border-radius:12px;white-space:pre-line;overflow-wrap:anywhere;background:var(--bg-2,#1b1016)}
+  .bcm-root label.bcm-check{display:flex;gap:9px;align-items:flex-start}.bcm-root .bcm-check input{width:16px;height:16px;margin-top:3px;padding:0;flex:none}.bcm-root .bcm-switch{margin-top:12px}
   .bcm-status[hidden]{display:none}.bcm-status.bcm-error{color:#ffadb9;background:#3b101b}.bcm-community{padding:12px 18px;border-bottom:1px solid var(--border,#ffc8d238);background:var(--bg-1,#170c12)}
   .bcm-community h2{font-size:15px;margin:0}.bcm-community summary{cursor:pointer;font-weight:600;color:var(--bright-text,#fff)}
   .bcm-community details>div{padding-top:10px}.bcm-community details{margin-top:8px}.bcm-community .bcm-identity{overflow-wrap:anywhere;margin:3px 0;font-size:12px}
@@ -43,6 +44,18 @@
   function safeSession() {
     const s = client().getSession();
     return s?.userId ? {userId: String(s.userId), deviceId: String(s.deviceId || '')} : null;
+  }
+  function registrationInfo() {
+    const value = client().getRegistrationInfo?.() || {};
+    return {providerName: String(value.providerName || 'Salix'), usernameHint: String(value.usernameHint || '@username:salix.host'), tokenRequired: value.tokenRequired !== false,
+      termsUrl: value.termsUrl || 'https://salix.host/terms/', privacyUrl: value.privacyUrl || null, tokenUrl: value.tokenUrl || 'https://salix.host/matrix/'};
+  }
+  function policyLink(text, value) {
+    try {
+      const url = new URL(String(value));
+      if (url.protocol === 'https:' && !url.username && !url.password) return link(text, url.href);
+    } catch {}
+    return el('span', text);
   }
   function publicConfig(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -70,7 +83,7 @@
   function mount(container, account) {
     if (!container?.replaceChildren) throw new TypeError('Provide a DOM container for Better Cherri account controls.');
     active.get(container)?.();
-    let alive = true, busy = false;
+    let alive = true, busy = false, accountMode = 'login', accountUsername = '', registrationPolicies = [];
     const style = el('style', css);
     const root = el('section', null, {class: 'bcm-root ' + (account ? 'bcm-account' : 'bcm-community')});
     let status;
@@ -98,13 +111,13 @@
       busy = value;
       for (const button of root.querySelectorAll('button')) button.disabled = value;
     }
-    async function run(action, success) {
+    async function run(action, success, failure) {
       if (!alive || busy) return;
       setBusy(true); show('');
       try {
         const result = await action();
         if (alive) await success?.(result);
-      } catch (error) { show(errorText(error), true); }
+      } catch (error) { if (alive) await failure?.(error); show(errorText(error), true); }
       finally { setBusy(false); }
     }
     function button(text, action, primary = false) {
@@ -138,12 +151,68 @@
         row.append(link('Open Chatrooms', '#/chat'), logoutButton()); card.append(row); addStatus(card);
         return;
       }
+      const info = registrationInfo();
+      if (accountMode === 'register') {
+        card.append(el('h2', 'Create your Better Cherri account'));
+        card.append(el('p', 'Choose a username and password. No email is required.'));
+        const form = el('form', null, {'aria-label': 'Create Better Cherri account'});
+        const user = el('input', null, {name: 'matrix-new-username', type: 'text', autocomplete: 'username', placeholder: 'yourname', required: '', 'aria-label': 'New username'});
+        user.value = accountUsername;
+        const pass = el('input', null, {name: 'matrix-new-password', type: 'password', autocomplete: 'new-password', required: '', 'aria-label': 'New password'});
+        const confirm = el('input', null, {name: 'matrix-confirm-password', type: 'password', autocomplete: 'new-password', required: '', 'aria-label': 'Confirm password'});
+        for (const [text, field] of [['Username', user], ['Password', pass], ['Confirm password', confirm]]) { const label = el('label', text); label.append(field); form.append(label); }
+        const token = el('input', null, {name: 'matrix-registration-token', type: 'text', autocomplete: 'off', 'aria-label': 'Registration token', ...(info.tokenRequired ? {required: ''} : {})});
+        if (info.tokenRequired) {
+          const label = el('label', 'Registration token'); label.append(token); form.append(label);
+          const note = el('p', 'This provider requires a single-use anti-spam token. ', {class: 'bcm-small'});
+          note.append(policyLink('Complete its human anti-spam check', info.tokenUrl)); form.append(note);
+        }
+        const agreement = el('label', null, {class: 'bcm-check'});
+        const accepted = el('input', null, {name: 'matrix-accept-terms', type: 'checkbox', required: '', 'aria-label': 'Accept chat provider terms'});
+        const terms = el('span', 'I agree to '); terms.append(policyLink(info.providerName + '’s terms of service', info.termsUrl));
+        if (info.privacyUrl) terms.append(el('span', ' and '), policyLink('privacy policy', info.privacyUrl));
+        agreement.append(accepted, terms); form.append(agreement);
+        const policyChecks = [];
+        for (const policy of registrationPolicies) {
+          const label = el('label', null, {class: 'bcm-check'});
+          const checkbox = el('input', null, {type: 'checkbox', required: '', 'aria-label': 'Accept ' + policy.name});
+          const text = el('span', 'I agree to '); text.append(policyLink(policy.name, policy.url)); label.append(checkbox, text); form.append(label);
+          policyChecks.push({id: policy.id, checkbox});
+        }
+        form.append(el('button', 'Create account →', {type: 'submit', class: 'bcm-primary'}));
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          if (!alive || busy) return;
+          const username = user.value.trim(), password = pass.value, registrationToken = token.value.trim();
+          accountUsername = username;
+          if (!username || !password || !confirm.value) { show('Choose a username and enter your password twice.', true); return; }
+          if (password !== confirm.value) { show('Your passwords do not match.', true); return; }
+          if (info.tokenRequired && !registrationToken) { show('Complete the provider’s human anti-spam check and enter its registration token.', true); return; }
+          if (!accepted.checked || policyChecks.some(item => !item.checkbox.checked)) { show('Read and accept the provider’s terms before creating your account.', true); return; }
+          const options = {acceptTerms: true, acceptedPolicies: policyChecks.map(item => item.id)};
+          pass.value = ''; confirm.value = ''; token.value = '';
+          run(() => client().register(username, password, registrationToken, options), () => {
+            sessionEvents();
+            if (alive) { render(); show('Account created. Open Chatrooms to connect your private rooms.'); }
+          }, error => {
+            if (error?.code === 'BETTER_REGISTRATION_TERMS_REQUIRED' && Array.isArray(error.policies)) {
+              registrationPolicies = error.policies.filter(item => item && typeof item.id === 'string' && typeof item.url === 'string').map(item => ({id: item.id, name: String(item.name || item.id), url: item.url}));
+              render();
+            }
+          });
+        });
+        card.append(form); addStatus(card);
+        card.append(button('Already have an account? Sign in', () => { accountMode = 'login'; render(); }));
+        card.append(el('p', 'Chat is hosted free by ' + info.providerName + '. Keep your password; your account does not require an email address.', {class: 'bcm-small'}));
+        return;
+      }
       card.append(el('h2', 'Sign in to Better Cherri chat'));
-      card.append(el('p', 'Use your free Salix Matrix account for private rooms and saved messages. No email is required.'));
+      card.append(el('p', 'Sign in for private rooms and saved messages. No email is required.'));
       const form = el('form', null, {'aria-label': 'Matrix sign in'});
-      const user = el('input', null, {name: 'matrix-username', type: 'text', autocomplete: 'username', placeholder: '@username:salix.host', required: '', 'aria-label': 'Matrix username'});
+      const user = el('input', null, {name: 'matrix-username', type: 'text', autocomplete: 'username', placeholder: info.usernameHint, required: '', 'aria-label': 'Matrix username'});
+      user.value = accountUsername;
       const pass = el('input', null, {name: 'matrix-password', type: 'password', autocomplete: 'current-password', required: '', 'aria-label': 'Matrix password'});
-      const userLabel = el('label', 'Matrix username'); userLabel.append(user);
+      const userLabel = el('label', 'Username'); userLabel.append(user);
       const passLabel = el('label', 'Password'); passLabel.append(pass);
       const submit = el('button', 'Sign in →', {type: 'submit', class: 'bcm-primary'});
       form.append(userLabel, passLabel, submit);
@@ -151,6 +220,7 @@
         event.preventDefault();
         if (!alive || busy) return;
         const username = user.value.trim(), password = pass.value;
+        accountUsername = username;
         if (!username || !password) { show('Enter your Matrix username and password.', true); return; }
         pass.value = '';
         run(() => client().login(username, password), () => {
@@ -160,13 +230,13 @@
       });
       card.append(form); addStatus(card);
       const row = el('div', null, {class: 'bcm-row'});
-      row.append(link('Create free account (no email)', 'https://salix.host/matrix/'));
-      card.append(row, el('p', 'Complete Salix’s anti-spam check, then create your account at chat.salix.host. Return here to sign in. Keep your password: no email is required.', {class: 'bcm-small'}));
+      row.append(button('Create account (no email)', () => { accountMode = 'register'; render(); }));
+      card.append(row, el('p', 'Chat is hosted free by ' + info.providerName + '. Create and sign in to your account here in Better Cherri.', {class: 'bcm-small'}));
     }
     function communityView() {
       const session = safeSession();
       if (!session) {
-        root.append(el('h2', 'Private Better Cherri rooms'), el('p', 'Sign in with a free Salix Matrix account to create or join rooms with saved messages. No email is required.'));
+        root.append(el('h2', 'Private Better Cherri rooms'), el('p', 'Sign in to create or join rooms with saved messages. No email is required.'));
         root.append(link('Sign in to chat', '#/login?next=/chat')); addStatus(root);
         return;
       }

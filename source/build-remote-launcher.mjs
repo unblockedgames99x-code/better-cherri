@@ -18,8 +18,8 @@ const source = path.resolve(option('--repo', path.join(workspace, 'work/cherri')
 const output = path.resolve(option('--out', path.join(workspace, 'outputs/Better-Cherri-Launcher.html')));
 const chatMode = option('--chat-mode', 'rooms');
 if (!['disabled', 'shared', 'rooms'].includes(chatMode)) throw new Error('--chat-mode must be disabled, shared, or rooms.');
-const chatProvider = option('--chat-provider', 'matrix');
-if (!['cherri', 'chitchatter', 'matrix'].includes(chatProvider)) throw new Error('--chat-provider must be cherri, chitchatter, or matrix.');
+const chatProvider = option('--chat-provider', 'xmpp');
+if (!['cherri', 'chitchatter', 'matrix', 'xmpp'].includes(chatProvider)) throw new Error('--chat-provider must be cherri, chitchatter, matrix, or xmpp.');
 const apiBase = new URL(option('--api-base', 'https://cherrion.top')).origin;
 const upstreamUrl = new URL(option('--upstream-url', `${apiBase}/`)).href;
 if (!apiBase.startsWith('https:') || !upstreamUrl.startsWith('https:')) throw new Error('Remote service URLs must use HTTPS.');
@@ -41,6 +41,7 @@ const bridge = await fs.readFile(path.join(source, 'b/better-cherri-bridge.js'),
 const transport = await fs.readFile(path.join(source, 'b/better-remote-transport.js'), 'utf8');
 const roomSetup = await fs.readFile(path.join(source, 'b/better-cherri-room-setup.js'), 'utf8');
 const matrixScripts = chatProvider === 'matrix' ? await Promise.all(['better-matrix-client.js','better-matrix-bridge.js','better-matrix-ui.js'].map(file=>fs.readFile(path.join(source,'b',file),'utf8'))) : [];
+const xmppScripts = chatProvider === 'xmpp' ? await Promise.all(['better-xmpp-sdk.js','better-xmpp-client.js','better-xmpp-bridge.js','better-xmpp-ui.js'].map(file=>fs.readFile(path.join(source,'b',file),'utf8'))) : [];
 let p2pRooms = [], p2pScript = '';
 if (chatProvider === 'chitchatter') {
   const configPath = path.resolve(option('--community-config', path.join(workspace, 'work/better-p2p-community.json')));
@@ -86,7 +87,7 @@ for (const file of scriptFiles) {
 }
 
 const setup = `
-window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
+window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'xmpp'?'2.1.0':chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
 window.__BETTER_CHERRI_CHAT_PROVIDER__=${jsonForScript(chatProvider)};
 window.__BETTER_CHERRI_P2P_ROOMS__=${jsonForScript(p2pRooms)};
 window.__BETTER_CHERRI_NATIVE_ORIGIN__=window.__BETTER_CHERRI_CHAT_PROVIDER__==="cherri"&&globalThis.origin===${jsonForScript(apiBase)};
@@ -105,7 +106,7 @@ window.__swRegistration=Promise.resolve(null);
   };
 })();`;
 
-const appHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Better Cherri</title>${favicon}${historyScript}<script>${inlineScript(setup)}</script><script>${inlineScript(transport)}</script><script>${inlineScript(bridge)}</script><script>${inlineScript(roomSetup)}</script>${matrixScripts.map(code=>'<script>'+inlineScript(code)+'</script>').join('')}${p2pScript?'<script>'+inlineScript(p2pScript)+'</script>':''}<style>${css}</style></head><body><main id="${root}"></main>${scripts.join('\n')}</body></html>`;
+const appHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Better Cherri</title>${favicon}${historyScript}<script>${inlineScript(setup)}</script><script>${inlineScript(transport)}</script><script>${inlineScript(bridge)}</script><script>${inlineScript(roomSetup)}</script>${matrixScripts.map(code=>'<script>'+inlineScript(code)+'</script>').join('')}${xmppScripts.map(code=>'<script>'+inlineScript(code)+'</script>').join('')}${p2pScript?'<script>'+inlineScript(p2pScript)+'</script>':''}<style>${css}</style></head><body><main id="${root}"></main>${scripts.join('\n')}</body></html>`;
 const bookmarkletHref = makeNativeBookmarklet().replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 const chatNotice = chatMode === 'rooms'
   ? 'Chat is unavailable in this launcher. Original rooms and shared member lists are hidden.'
@@ -119,7 +120,7 @@ const launcherHtml = `<!doctype html>
      This build does not start or require a local server. -->
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Better Cherri Launcher</title>${favicon}
 <style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#0c0a0c;color:#f5edf2;font:15px/1.55 system-ui,sans-serif}main{width:min(520px,100%);padding:32px;background:#171317;border:1px solid #332730;border-radius:22px}h1{font-size:30px;letter-spacing:-1px;margin:0 0 8px}p{color:#b9a9b3;margin:0 0 22px}button,a{font:inherit}button{padding:13px 19px;background:#f2b4d3;color:#28151f;font-weight:700;border:0;border-radius:11px;cursor:pointer}button:hover{background:#ffd0e7}button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #ffd0e7;outline-offset:4px}.fine{font-size:12px;margin:15px 0 0;color:#ad9aa8}#status{margin-top:18px;color:#eab9d5;min-height:24px}a{color:#efb6d2}details{margin-top:22px;font-size:13px;color:#b9a9b3}summary{cursor:pointer}details p{margin:10px 0 0;font-size:13px}#same{margin-left:14px;font-size:13px}</style></head>
-<body><main>${chatProvider === 'matrix' ? `<h1>Better Cherri</h1><p>The original Cherri chat interface, with private rooms and saved messages on free Matrix hosting.</p><button id="launch">Launch Better Cherri</button><a id="same" href="#" hidden>Open in this tab</a><div id="status" role="status" aria-live="polite"></div><p class="fine">No server on your PC. Sign in with a free Matrix account inside the app. Room setup is required once for your community.</p>` : chatProvider === 'chitchatter' ? `<h1>Better Cherri</h1><p>Three private live-chat rooms, plus your games and music. No account, paid hosting, or server on your PC is required.</p>
+<body><main>${['matrix','xmpp'].includes(chatProvider) ? `<h1>Better Cherri</h1><p>The original Cherri chat interface, with private rooms and saved messages on free hosted chat.</p><button id="launch">Launch Better Cherri</button><a id="same" href="#" hidden>Open in this tab</a><div id="status" role="status" aria-live="polite"></div><p class="fine">No server on your PC. Create your free chat account inside the app. Room setup is required once for your community.</p>` : chatProvider === 'chitchatter' ? `<h1>Better Cherri</h1><p>Three private live-chat rooms, plus your games and music. No account, paid hosting, or server on your PC is required.</p>
 <button id="launch">Launch Better Cherri</button><a id="same" href="#" hidden>Open in this tab</a><div id="status" role="status" aria-live="polite"></div>
 <p class="fine">Share this same launcher with your members so everyone enters the same General, Games, and Music rooms. It contains the room access keys.</p><p class="fine">Chat is live-only. History disappears when everyone leaves. Browser and network limits apply.</p><details><summary>How private live chat works</summary><p>Chitchatter connects room participants using encrypted browser-to-browser connections. Anyone with this launcher or an invite link can join its rooms. The member list shows connected participants of the current room.</p><p>The chat interface comes from Chitchatter; the rest of Better Cherri keeps its existing interface and Cherri-hosted game/music services. Free signaling and relay availability determine which networks can connect.</p><p><a href="https://github.com/jeremyckahn/chitchatter" target="_blank" rel="noopener">Chitchatter source and documentation</a></p></details>` : `<h1>Better Cherri</h1><p>Use Cherri’s own sign-in and servers. Nothing needs to run as a server on your PC.</p>
 <ol style="padding-left:22px;color:#b9a9b3"><li style="margin-bottom:16px">Drag <a id="native-bookmarklet" draggable="true" href="${bookmarkletHref}" style="display:inline-block;padding:8px 14px;border:1px solid #785569;border-radius:9px;font-weight:700">Better Cherri</a> to your browser’s bookmarks bar.</li><li style="margin-bottom:16px"><a href="${apiBase}/" target="_blank" rel="noopener">Open Cherri</a> and sign in normally.</li><li>While on Cherri, click the Better Cherri bookmark. In the new about:blank tab, choose this downloaded launcher HTML file.</li></ol>

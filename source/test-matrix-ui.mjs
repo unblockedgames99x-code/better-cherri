@@ -28,7 +28,9 @@ function fixture(options = {}) {
   const calls = [], events = [], copied = [], downloads = [];
   const client = {
     getSession: () => clone(session), getCommunity: () => clone(community),
+    getRegistrationInfo: () => options.registrationInfo ?? {providerName:'Salix',usernameHint:'@username:salix.host',tokenRequired:true,termsUrl:'https://salix.host/terms/',tokenUrl:'https://salix.host/matrix/'},
     login: async (username, password) => { calls.push(['login',username,password]); if (options.login) return options.login(); session={userId:'@member:salix.host',deviceId:'device',accessToken:'SESSION_SECRET'}; return clone(session); },
+    register: async (username,password,token,registrationOptions) => { calls.push(['register',username,password,token,clone(registrationOptions)]); if (options.register) return options.register(); session={userId:'@newmember:salix.host',deviceId:'newdevice',accessToken:'NEW_SESSION_SECRET'}; return clone(session); },
     logout: async () => { calls.push(['logout']); session=null; },
     createCommunity: async () => { calls.push(['create']); community=clone(cfg); return clone(community); },
     setCommunity: value => { calls.push(['import',clone(value)]); if (!value.rooms || Object.keys(value.rooms).length !== 3) throw new Error('Three room IDs are required.'); community=clone(cfg); return clone(community); },
@@ -36,7 +38,7 @@ function fixture(options = {}) {
     joinCommunity: async () => { calls.push(['join']); return Object.keys(cfg.rooms).map(name => ({name,joined:true})); },
     listMembers: async () => { calls.push(['members']); return []; }
   };
-  const context = vm.createContext({document:{createElement:tag=>new Element(tag)},CustomEvent:DetailEvent,__betterMatrix:client,dispatchEvent:event=>{events.push(event);return true;},navigator:{clipboard:{writeText:async text=>copied.push(text)}},__BETTER_CHERRI_DOWNLOAD_LAUNCHER__:async config=>downloads.push(config),fetch:()=>{throw new Error('UI must not send its own network requests.');}});
+  const context = vm.createContext({URL,document:{createElement:tag=>new Element(tag)},CustomEvent:DetailEvent,__betterMatrix:client,dispatchEvent:event=>{events.push(event);return true;},navigator:{clipboard:{writeText:async text=>copied.push(text)}},__BETTER_CHERRI_DOWNLOAD_LAUNCHER__:async config=>downloads.push(config),fetch:()=>{throw new Error('UI must not send its own network requests.');}});
   vm.runInContext(source, context);
   const container = new Element('div');
   return {container, calls, events, copied, downloads, ui:context.__betterMatrixUI, getSession:()=>session, setSession:value=>{session=value;}};
@@ -53,7 +55,8 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   assert.deepEqual(f.calls, [], 'Mount does not log in, register, or create rooms.');
   assert.equal(byName(f,'matrix-password').getAttribute('type'),'password');
   const anchors = nodes(f,'a');
-  assert.ok(anchors.some(node=>node.getAttribute('href')==='https://salix.host/matrix/'));
+  assert.ok(btn(f,'Create account (no email)'),'Create account is an in-app mode button.');
+  assert.ok(!anchors.some(node=>/register|signup/.test(node.getAttribute('href'))),'No external account signup link.');
   assert.match(f.container.textContent,/No email is required/);
   assert.ok(!anchors.some(node=>/account\.matrix\.org/.test(node.getAttribute('href'))));
   assert.ok(!anchors.some(node=>node.textContent==='Reset password'));
@@ -70,6 +73,55 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   const chat=nodes(f,'a').find(node=>node.getAttribute('href')==='#/chat');
   assert.equal(chat.getAttribute('target'),null,'Internal Chatrooms navigation remains in the app.');
   click(btn(f,'Sign out')); await tick(); assert.equal(f.getSession(),null);
+}
+{
+  const f=fixture();f.ui.mountAccount(f.container);click(btn(f,'Create account (no email)'));
+  assert.deepEqual(f.calls,[],'Opening Create account does not register or request an anti-spam token.');
+  assert.ok(form(f,'Create Better Cherri account'));
+  assert.equal(nodes(f,'iframe').length,0,'The provider’s blocked iframe is never embedded.');
+  assert.ok(!nodes(f,'input').some(node=>node.getAttribute('type')==='email'));
+  for(const name of ['matrix-new-password','matrix-confirm-password']){
+    assert.equal(byName(f,name).getAttribute('type'),'password');assert.equal(byName(f,name).getAttribute('autocomplete'),'new-password');
+  }
+  assert.equal(byName(f,'matrix-accept-terms').checked,undefined,'Terms are never automatically accepted.');
+  submit(form(f,'Create Better Cherri account'));await tick();assert.equal(f.calls.length,0);
+  byName(f,'matrix-new-username').value='newmember';byName(f,'matrix-new-password').value='NEW_PASSWORD';byName(f,'matrix-confirm-password').value='DIFFERENT';
+  submit(form(f,'Create Better Cherri account'));await tick();assert.match(f.container.textContent,/passwords do not match/);assert.equal(f.calls.length,0);
+  byName(f,'matrix-confirm-password').value='NEW_PASSWORD';submit(form(f,'Create Better Cherri account'));await tick();assert.match(f.container.textContent,/anti-spam check/);assert.equal(f.calls.length,0);
+  byName(f,'matrix-registration-token').value='HUMAN_TOKEN';submit(form(f,'Create Better Cherri account'));await tick();assert.match(f.container.textContent,/accept the provider/);assert.equal(f.calls.length,0);
+  byName(f,'matrix-accept-terms').checked=true;submit(form(f,'Create Better Cherri account'));
+  assert.equal(byName(f,'matrix-new-password').value,'');assert.equal(byName(f,'matrix-confirm-password').value,'');assert.equal(byName(f,'matrix-registration-token').value,'');
+  await tick();assert.deepEqual(f.calls,[['register','newmember','NEW_PASSWORD','HUMAN_TOKEN',{acceptTerms:true,acceptedPolicies:[]}]]);
+  assert.deepEqual(f.events.map(event=>event.type),['cherri:me','cherri:session','better-matrix:session']);
+  assert.ok(!JSON.stringify(f.events.map(event=>event.detail)).includes('NEW_SESSION_SECRET'));
+  assert.ok(!f.calls.some(call=>call[0]==='create'),'Account creation does not silently create rooms.');
+}
+{
+  const f=fixture({registrationInfo:{providerName:'Hosted Chat',usernameHint:'@username:example.test',tokenRequired:false,termsUrl:'https://example.test/terms'}});
+  f.ui.mountAccount(f.container);click(btn(f,'Create account (no email)'));
+  assert.equal(byName(f,'matrix-registration-token'),undefined,'Direct-registration providers do not display token steps.');
+  assert.ok(!nodes(f,'a').some(node=>/salix|register/.test(node.getAttribute('href'))),'No external signup or token redirect is required.');
+  byName(f,'matrix-new-username').value='newmember';byName(f,'matrix-new-password').value='NEW_PASSWORD';byName(f,'matrix-confirm-password').value='NEW_PASSWORD';byName(f,'matrix-accept-terms').checked=true;
+  submit(form(f,'Create Better Cherri account'));await tick();assert.equal(f.calls[0][0],'register');assert.equal(f.calls[0][3],'');
+}
+{
+  const error=Object.assign(new Error('Read and accept the chat server policy.'),{code:'BETTER_REGISTRATION_TERMS_REQUIRED',policies:[{id:'privacy',name:'Privacy policy',url:'https://example.test/privacy'}]});
+  const f=fixture({registrationInfo:{providerName:'Hosted Chat',tokenRequired:false,termsUrl:'https://example.test/terms'},register:async()=>{throw error;}});
+  f.ui.mountAccount(f.container);click(btn(f,'Create account (no email)'));
+  const fill=()=>{byName(f,'matrix-new-username').value='newmember';byName(f,'matrix-new-password').value='NEW_PASSWORD';byName(f,'matrix-confirm-password').value='NEW_PASSWORD';byName(f,'matrix-accept-terms').checked=true;};
+  fill();submit(form(f,'Create Better Cherri account'));await tick();
+  assert.ok(nodes(f,'a').some(node=>node.getAttribute('href')==='https://example.test/privacy'));
+  const policy=nodes(f,'input').find(node=>node.getAttribute('aria-label')==='Accept Privacy policy');assert.ok(policy);assert.equal(policy.checked,undefined);
+  fill();submit(form(f,'Create Better Cherri account'));await tick();assert.equal(f.calls.length,1,'Server terms need an explicit fresh checkbox action.');
+  policy.checked=true;submit(form(f,'Create Better Cherri account'));await tick();assert.deepEqual(f.calls[1][4].acceptedPolicies,['privacy']);
+}
+{
+  let finish;
+  const f=fixture({registrationInfo:{providerName:'Hosted Chat',tokenRequired:false,termsUrl:'https://example.test/terms'},register:()=>new Promise(resolve=>{finish=resolve;})});
+  const stop=f.ui.mountAccount(f.container);click(btn(f,'Create account (no email)'));
+  byName(f,'matrix-new-username').value='newmember';byName(f,'matrix-new-password').value='NEW_PASSWORD';byName(f,'matrix-confirm-password').value='NEW_PASSWORD';byName(f,'matrix-accept-terms').checked=true;
+  submit(form(f,'Create Better Cherri account'));stop();finish({userId:'@newmember:salix.host'});await tick();
+  assert.equal(f.container.children.length,0);assert.equal(f.events.length,0,'Destroyed signup cannot rerender or fire session events.');
 }
 {
   const error=Object.assign(new Error('Please wait.'),{status:429,retryAfterMs:3200});
@@ -137,4 +189,4 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   f.container.append(chat);stop();
   assert.deepEqual(f.container.children,[chat],'Effect cleanup removes only its own nodes, preserving newly committed React chat.');
 }
-console.log('Matrix UI: explicit login, room creation/import/invitations, safe exports, rate-limit errors, event refreshes, and async cleanup passed. No network requests.');
+console.log('Matrix UI: native no-email signup, explicit password/terms/token actions, login, room creation/import/invitations, safe exports, errors, event refreshes, and async cleanup passed. No network requests.');

@@ -1,10 +1,14 @@
 export function patchMatrixIntegration(input) {
-  if (input.includes('window.__betterMatrixRequest(g,I)')) return input;
   let source=input;
   const replace=(before,after)=>{
     if(source.split(before).length!==2)throw new Error('Matrix integration anchor changed: '+before.slice(0,80));
     source=source.replace(before,after);
   };
+  if (source.includes('window.__betterMatrixRequest(g,I)')) {
+    if (!source.includes('"better_cherri_remote_session_token","better_cherri_matrix_session_v1",')) replace('kCA=new Set(["session_token","better_cherri_session_token","better_cherri_remote_session_token",', 'kCA=new Set(["session_token","better_cherri_session_token","better_cherri_remote_session_token","better_cherri_matrix_session_v1",');
+    return source;
+  }
+  replace('kCA=new Set(["session_token","better_cherri_session_token","better_cherri_remote_session_token",', 'kCA=new Set(["session_token","better_cherri_session_token","better_cherri_remote_session_token","better_cherri_matrix_session_v1",');
   replace('function UI(){return localStorage.getItem(GM)}', 'function UI(){return globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="matrix"?window.__betterMatrixSessionToken():localStorage.getItem(GM)}');
   replace('function NM(A){localStorage.setItem(GM,A)}', 'function NM(A){if(globalThis.__BETTER_CHERRI_CHAT_PROVIDER__!=="matrix")localStorage.setItem(GM,A)}');
   replace('function Xy(){localStorage.removeItem(GM)}', 'function Xy(){if(globalThis.__BETTER_CHERRI_CHAT_PROVIDER__==="matrix"){window.__betterMatrix.logout().catch(()=>{}).finally(()=>{Vi();window.dispatchEvent(new Event("cherri:session"))});return}localStorage.removeItem(GM)}');

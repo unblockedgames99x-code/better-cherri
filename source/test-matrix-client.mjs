@@ -12,7 +12,8 @@ const store = () => { const data = new Map(); return { data, getItem: key => dat
 
 function server() {
   const requests = [], rooms = new Map(), users = new Map([['alice', '@alice:salix.host'], ['bob', '@bob:salix.host']]);
-  let roomNumber = 0, eventNumber = 0, failNext = null, syncHandler = null, aborted = 0;
+  const registrationSessions = new Map();
+  let roomNumber = 0, eventNumber = 0, failNext = null, syncHandler = null, aborted = 0, registrationFlow = ['m.login.registration_token', 'm.login.terms', 'm.login.dummy'];
   const userFor = headers => headers.get('Authorization')?.replace('Bearer token-', '@').replace(/$/, ':salix.host');
   const makeEvent = (room, type, sender, content, extra = {}) => ({ event_id: '$event' + (++eventNumber), room_id: room, origin_server_ts: 1760000000000 + eventNumber * 10, type, sender, content, ...extra });
   const privateState = room => [
@@ -29,6 +30,21 @@ function server() {
     assert.equal(init.credentials, 'omit');
     if (failNext) { const failure = failNext; failNext = null; return failure(); }
     if (path === '/login') { assert.equal(headers.get('Authorization'), null); return json({ user_id: users.get(body.identifier.user.replace(/^@/, '').split(':')[0]), device_id: 'D1', access_token: 'token-' + body.identifier.user.replace(/^@/, '').split(':')[0] }); }
+    if (path === '/register') {
+      assert.equal(headers.get('Authorization'), null, 'registration never sends an existing account token');
+      assert.equal(body.email, undefined); assert.equal(body.msisdn, undefined);
+      if (users.has(body.username)) return json({ errcode: 'M_USER_IN_USE', error: 'Username is taken' }, 400);
+      let registration = registrationSessions.get(body.auth?.session);
+      if (!registration) { registration = { session: 'uia-' + (registrationSessions.size + 1), username: body.username, completed: [] }; registrationSessions.set(registration.session, registration); }
+      const challenge = extra => json({ session: registration.session, flows: [{ stages: registrationFlow }], completed: registration.completed, params: { 'm.login.terms': { policies: { privacy: { version: '1.0', en: { name: 'Server privacy policy', url: 'https://salix.host/terms/' } } } } }, ...extra }, 401);
+      if (!body.auth) return challenge();
+      if (body.auth.type === 'm.login.registration_token' && body.auth.token !== 'manual-test-token') return challenge({ errcode: 'M_FORBIDDEN', error: 'Registration token is invalid' });
+      if (!registrationFlow.includes(body.auth.type)) return challenge({ errcode: 'M_FORBIDDEN', error: 'Unsupported auth stage' });
+      if (!registration.completed.includes(body.auth.type)) registration.completed.push(body.auth.type);
+      if (registrationFlow.some(stage => !registration.completed.includes(stage))) return challenge();
+      const userId = '@' + body.username + ':salix.host'; users.set(body.username, userId);
+      return json({ user_id: userId, device_id: 'NEW', access_token: 'token-' + body.username });
+    }
     if (!user || ![...users.values()].includes(user)) return json({ errcode: 'M_UNKNOWN_TOKEN', error: 'Invalid token' }, 401);
     if (path === '/account/whoami') return json({ user_id: user, device_id: 'D1' });
     if (path === '/logout') return json({});
@@ -69,7 +85,7 @@ function server() {
     if (route.startsWith('typing/')) return json({});
     throw Error('Unexpected room route: ' + route);
   };
-  return { fetch, requests, rooms, makeEvent, setFailure: fn => { failNext = fn; }, setSync: fn => { syncHandler = fn; }, get aborted() { return aborted; } };
+  return { fetch, requests, rooms, users, makeEvent, setFailure: fn => { failNext = fn; }, setSync: fn => { syncHandler = fn; }, setRegistrationFlow: stages => { registrationFlow = stages; registrationSessions.clear(); }, get aborted() { return aborted; } };
 }
 
 function client(remote, storage = store(), config) {
@@ -269,4 +285,50 @@ const memoryOnly = client(remote, deniedStorage);
 await memoryOnly.api.login('alice', 'memory-password'); memoryOnly.api.setCommunity(community);
 assert.equal(memoryOnly.api.getSession().userId, '@alice:salix.host', 'about:blank storage denial falls back to an in-memory session');
 assert.equal((await memoryOnly.api.getMessages('better-general')).messages.length > 0, true);
+
+const signupRemote = server(), signup = client(signupRemote);
+const registrationInfo = signup.api.getRegistrationInfo();
+assert.equal(registrationInfo.providerName, 'Salix'); assert.equal(registrationInfo.tokenRequired, true);
+registrationInfo.termsUrl = 'https://evil.example/';
+assert.equal(signup.api.getRegistrationInfo().termsUrl, 'https://salix.host/terms/', 'metadata is a safe copy');
+await assert.rejects(signup.api.register('newbie', 'register-password', 'manual-test-token'), error => error.code === 'BETTER_REGISTRATION_TERMS_REQUIRED');
+await assert.rejects(signup.api.register('newbie', 'register-password', '', { acceptTerms: true }), error => error.code === 'BETTER_REGISTRATION_TOKEN_REQUIRED');
+await assert.rejects(signup.api.register('@newbie:matrix.org', 'register-password', 'manual-test-token', { acceptTerms: true }), error => error.code === 'M_INVALID_USERNAME');
+assert.equal(signupRemote.requests.length, 0, 'missing consent or token never begins registration');
+let policies;
+await assert.rejects(signup.api.register('newbie', 'register-password', 'manual-test-token', { acceptTerms: true }), error => { policies = error.policies; return error.code === 'BETTER_REGISTRATION_TERMS_REQUIRED'; });
+assert.deepEqual(normalized(policies), [{ id: 'privacy', name: 'Server privacy policy', url: 'https://salix.host/terms/', version: '1.0' }]);
+assert.equal(signupRemote.users.has('newbie'), false, 'registration cannot finish until each server policy is accepted');
+assert.equal(signup.api.getSession(), null);
+assert.equal([...signup.storage.data.values()].join('').includes('register-password'), false);
+const registered = await signup.api.register('newbie', 'register-password', '', { acceptTerms: true, acceptedPolicies: ['privacy'] });
+assert.deepEqual(normalized(registered), { userId: '@newbie:salix.host', deviceId: 'NEW' });
+assert.equal(signupRemote.users.has('newbie'), true);
+assert.equal((await signup.api.me()).id, '@newbie:salix.host', 'a registration response authenticates the new session');
+assert.equal(signupRemote.requests.filter(item => item.path === '/register').length, 4, 'UIA submits only the requested token, terms and dummy stages');
+assert.equal([...signup.storage.data.values()].join('').includes('manual-test-token'), false, 'registration tokens are never persisted or exported');
+assert.equal([...signup.storage.data.values()].join('').includes('register-password'), false);
+assert(signupRemote.requests.filter(item => item.path === '/register').every(item => !item.headers.authorization));
+assert.equal(signup.api.exportCommunity().includes('token-newbie'), false);
+
+const invalidToken = client(signupRemote);
+await assert.rejects(invalidToken.api.register('wrongtoken', 'register-password', 'invalid-token', { acceptTerms: true }), error => error.code === 'M_FORBIDDEN');
+assert.equal(signupRemote.users.has('wrongtoken'), false);
+assert.equal(signupRemote.requests.filter(item => item.path === '/register' && item.body.username === 'wrongtoken').length, 2, 'invalid verification is not automatically repeated');
+signupRemote.setRegistrationFlow(['m.login.dummy']);
+const dummySignup = client(signupRemote);
+await dummySignup.api.register('dummyuser', 'register-password', 'manual-test-token', { acceptTerms: true });
+assert.equal(dummySignup.api.getSession().userId, '@dummyuser:salix.host');
+signupRemote.setRegistrationFlow(['m.login.email.identity']);
+const noEmailSignup = client(signupRemote);
+await assert.rejects(noEmailSignup.api.register('noemailuser', 'register-password', 'manual-test-token', { acceptTerms: true }), error => error.code === 'BETTER_REGISTRATION_UNSUPPORTED');
+assert.equal(signupRemote.users.has('noemailuser'), false);
+assert.equal(signupRemote.requests.some(item => /email|msisdn/.test(item.path)), false, 'the client has no email or phone registration endpoint');
+signupRemote.setRegistrationFlow(['m.login.recaptcha']);
+await assert.rejects(noEmailSignup.api.register('captchause', 'register-password', 'manual-test-token', { acceptTerms: true }), error => error.code === 'BETTER_REGISTRATION_UNSUPPORTED');
+assert.equal(signupRemote.users.has('captchause'), false, 'unsupported human verification is never skipped');
+signupRemote.setFailure(() => json({ errcode: 'M_LIMIT_EXCEEDED', error: 'Slow down', retry_after_ms: 2000 }, 429));
+const registrationBefore429 = signupRemote.requests.length;
+await assert.rejects(noEmailSignup.api.register('ratelimituser', 'register-password', 'manual-test-token', { acceptTerms: true }), error => error.status === 429 && error.retryAfterMs === 2000);
+assert.equal(signupRemote.requests.length - registrationBefore429, 1, 'registration mutations are not retried on rate limits');
 console.log('Matrix client tests passed: private room creation/invites, persistent history, scoped members, authenticated edits/replies/reactions, token isolation, rate limits and sync cancellation. All server requests were mocked.');

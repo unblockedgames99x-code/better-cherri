@@ -4,6 +4,8 @@
 (() => {
   'use strict';
   const BASE = 'https://matrix.salix.host';
+  const ACCOUNT_DOMAIN = 'salix.host';
+  const REGISTRATION_INFO = Object.freeze({ providerName: 'Salix', usernameHint: '@username:salix.host', tokenRequired: true, termsUrl: 'https://salix.host/terms/', tokenUrl: 'https://salix.host/matrix/' });
   const PREFIX = '/_matrix/client/v3';
   const SESSION_KEY = 'better_cherri_matrix_session_v1';
   const COMMUNITY_KEY = 'better_cherri_matrix_community_v1';
@@ -16,7 +18,7 @@
   const savedIds = new Map();
   const reservedIds = new Map();
   const profiles = new Map();
-  let session = null, community = null, syncRun = null, syncSince = '', creation = null, verifiedSession = null, verificationPromise = null;
+  let session = null, community = null, syncRun = null, syncSince = '', creation = null, verifiedSession = null, verificationPromise = null, pendingRegistration = null, registrationRun = null;
   const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
   function storageGet(key) { try { return JSON.parse(globalThis.localStorage.getItem(key) || 'null'); } catch { return null; } }
   function storageSet(key, value) { try { value == null ? globalThis.localStorage.removeItem(key) : globalThis.localStorage.setItem(key, JSON.stringify(value)); } catch {} }
@@ -70,7 +72,7 @@
   }
   function allowed(method, path) {
     if (method === 'GET' && /^\/(?:login|account\/whoami|joined_rooms|sync)$/.test(path)) return true;
-    if (method === 'POST' && /^\/(?:login|logout|createRoom|search)$/.test(path)) return true;
+    if (method === 'POST' && /^\/(?:login|register|logout|createRoom|search)$/.test(path)) return true;
     if (method === 'POST' && /^\/join\/[^/]+$/.test(path)) return true;
     if (method === 'GET' && /^\/profile\/[^/]+$/.test(path)) return true;
     if (method === 'GET' && /^\/rooms\/[^/]+\/(?:state|messages|joined_members|event\/[^/]+)$/.test(path)) return true;
@@ -78,7 +80,7 @@
     if (method === 'PUT' && /^\/rooms\/[^/]+\/(?:send\/(?:m\.room\.message|m\.reaction)\/[^/]+|redact\/[^/]+\/[^/]+|typing\/[^/]+)$/.test(path)) return true;
     return false;
   }
-  async function request(method, path, body, { auth = true, query, signal } = {}) {
+  async function request(method, path, body, { auth = true, query, signal, registrationUIA = false } = {}) {
     if (!allowed(method, path) || /[?#\\]/.test(path)) throw matrixError('Unsupported Matrix operation.', 'BETTER_OPERATION_NOT_ALLOWED');
     if (auth) requireSession();
     const requestSession = auth ? session : null;
@@ -98,6 +100,7 @@
     let result;
     try { result = await response.json(); } catch { throw matrixError('Matrix returned an unreadable response.', 'BETTER_MATRIX_RESPONSE', response.status); }
     if (!response.ok) {
+      if (registrationUIA && path === '/register' && response.status === 401 && Array.isArray(result?.flows) && typeof result.session === 'string' && result.session) return { registrationChallenge: result };
       let retryAfterMs = Number(result?.retry_after_ms) || 0;
       const retry = response.headers.get('Retry-After');
       if (retry) { const seconds = Number(retry); retryAfterMs = Math.max(retryAfterMs, Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retry) - Date.now()); }
@@ -150,21 +153,82 @@
   async function login(username, password) {
     const user = String(username || '').trim();
     if (!user || !password) throw matrixError('Enter your Matrix username and password.');
-    if (user.startsWith('@') && (!validUser(user) || !user.endsWith(':salix.host'))) throw matrixError('Use a salix.host account with this hosted option.');
+    if (user.startsWith('@') && (!validUser(user) || !user.endsWith(':' + ACCOUNT_DOMAIN))) throw matrixError('Use a ' + ACCOUNT_DOMAIN + ' account with this hosted option.');
     const result = await request('POST', '/login', { type: 'm.login.password', identifier: { type: 'm.id.user', user }, password: String(password), initial_device_display_name: 'Better Cherri' }, { auth: false });
-    if (!validUser(result.user_id) || !result.user_id.endsWith(':salix.host') || typeof result.access_token !== 'string' || !result.access_token) throw matrixError('Salix did not return a usable session.');
+    if (!validUser(result.user_id) || !result.user_id.endsWith(':' + ACCOUNT_DOMAIN) || typeof result.access_token !== 'string' || !result.access_token) throw matrixError(REGISTRATION_INFO.providerName + ' did not return a usable session.');
     stopSync(); resetCaches();
     session = { userId: result.user_id, deviceId: String(result.device_id || ''), accessToken: result.access_token };
-    verifiedSession = session; verificationPromise = null;
+    verifiedSession = session; verificationPromise = null; pendingRegistration = null;
     storageSet(SESSION_KEY, session); emit({ type: 'session', session: safeSession() }); startSync();
     return safeSession();
+  }
+  function getRegistrationInfo() { return clone(REGISTRATION_INFO); }
+  function registrationPolicies(challenge) {
+    const policies = challenge.params?.['m.login.terms']?.policies;
+    if (!policies || typeof policies !== 'object' || Array.isArray(policies) || !Object.keys(policies).length || Object.keys(policies).length > 10) throw matrixError('The server supplied invalid registration terms.', 'BETTER_REGISTRATION_UNSUPPORTED');
+    return Object.entries(policies).map(([id, policy]) => {
+      const localized = policy?.en || Object.entries(policy || {}).find(([key, value]) => key !== 'version' && value && typeof value === 'object' && value.url)?.[1];
+      let url;
+      try { url = new URL(localized?.url); } catch { throw matrixError('The server supplied an invalid policy link.', 'BETTER_REGISTRATION_UNSUPPORTED'); }
+      if (url.protocol !== 'https:' || url.username || url.password || typeof policy.version !== 'string' || typeof localized.name !== 'string') throw matrixError('The server supplied invalid registration terms.', 'BETTER_REGISTRATION_UNSUPPORTED');
+      return { id, name: localized.name, url: url.href, version: policy.version };
+    });
+  }
+  function termsRequired(policies) { const error = matrixError('Read and accept each server policy before creating your account.', 'BETTER_REGISTRATION_TERMS_REQUIRED'); error.policies = clone(policies); return error; }
+  async function register(username, password, registrationToken = '', options = {}) {
+    const provided = String(username || '').trim();
+    const user = provided.startsWith('@') && provided.endsWith(':' + ACCOUNT_DOMAIN) ? provided.slice(1, -ACCOUNT_DOMAIN.length - 1) : provided;
+    if (!/^[a-z0-9._=-]{1,128}$/.test(user)) throw matrixError('Choose a lowercase username using letters, numbers, dots, underscores, hyphens or equals signs.', 'M_INVALID_USERNAME');
+    const secret = String(password || '');
+    if (secret.length < 8 || secret.length > 1024) throw matrixError('Choose a password with 8 to 1,024 characters.', 'M_WEAK_PASSWORD');
+    if (options.acceptTerms !== true) throw termsRequired([{ id: 'service_terms', name: REGISTRATION_INFO.providerName + ' service terms', url: REGISTRATION_INFO.termsUrl, version: 'current' }]);
+    const token = String(registrationToken || '').trim();
+    const tokenAlreadyAccepted = pendingRegistration?.username === user && pendingRegistration.challenge?.completed?.includes('m.login.registration_token');
+    if (REGISTRATION_INFO.tokenRequired && !token && !tokenAlreadyAccepted) throw matrixError('Complete the server’s human anti-spam check and enter its registration token.', 'BETTER_REGISTRATION_TOKEN_REQUIRED');
+    if (token && (!/^[A-Za-z0-9._~-]+$/.test(token) || token.length > 64)) throw matrixError('Enter the registration token exactly as the server provided it.', 'BETTER_REGISTRATION_TOKEN_REQUIRED');
+    if (registrationRun) throw matrixError('Account creation is already running. Wait for it to finish.', 'BETTER_REGISTRATION_IN_PROGRESS', 409);
+    registrationRun = (async () => {
+      const payload = { username: user, password: secret, initial_device_display_name: 'Better Cherri', inhibit_login: false };
+      let challenge = pendingRegistration?.username === user ? pendingRegistration.challenge : null;
+      const accepted = new Set(Array.isArray(options.acceptedPolicies) ? options.acceptedPolicies.map(String) : []);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        let auth;
+        if (challenge) {
+          const supported = new Set(['m.login.registration_token', 'm.login.terms', 'm.login.dummy']);
+          const flow = challenge.flows.find(value => Array.isArray(value?.stages) && value.stages.length && value.stages.every(stage => supported.has(stage)));
+          if (!flow) throw matrixError('This server requires verification that Better Cherri does not support. No email, phone number, or external sign-in will be submitted.', 'BETTER_REGISTRATION_UNSUPPORTED');
+          const completed = new Set(Array.isArray(challenge.completed) ? challenge.completed : []);
+          const stage = flow.stages.find(value => !completed.has(value));
+          if (!stage) throw matrixError('The server did not finish account creation after verification.', 'BETTER_REGISTRATION_UNSUPPORTED');
+          if (stage === 'm.login.registration_token' && !token) throw matrixError('Enter the registration token supplied after the server’s human anti-spam check.', 'BETTER_REGISTRATION_TOKEN_REQUIRED');
+          if (stage === 'm.login.terms') { const policies = registrationPolicies(challenge); if (policies.some(policy => !accepted.has(policy.id))) throw termsRequired(policies); }
+          auth = { type: stage, session: challenge.session, ...(stage === 'm.login.registration_token' ? { token } : {}) };
+        }
+        const result = await request('POST', '/register', { ...payload, ...(auth ? { auth } : {}) }, { auth: false, registrationUIA: true });
+        if (result.registrationChallenge) {
+          challenge = result.registrationChallenge;
+          pendingRegistration = { username: user, challenge };
+          if (challenge.errcode || (auth && !(challenge.completed || []).includes(auth.type))) throw matrixError(challenge.error || 'The server did not accept that registration verification.', challenge.errcode || 'BETTER_REGISTRATION_VERIFICATION_FAILED', 401);
+          continue;
+        }
+        pendingRegistration = null;
+        if (!validUser(result.user_id) || !result.user_id.endsWith(':' + ACCOUNT_DOMAIN)) throw matrixError('The server did not return a valid account.', 'BETTER_REGISTRATION_RESPONSE', 502);
+        if (typeof result.access_token !== 'string' || !result.access_token) { const error = matrixError('Your account was created. Sign in with your new username and password.', 'BETTER_REGISTRATION_SIGN_IN_REQUIRED'); error.accountCreated = true; throw error; }
+        stopSync(); resetCaches();
+        session = { userId: result.user_id, deviceId: String(result.device_id || ''), accessToken: result.access_token };
+        verifiedSession = session; verificationPromise = null;
+        storageSet(SESSION_KEY, session); emit({ type: 'session', session: safeSession() }); startSync(); return safeSession();
+      }
+      throw matrixError('The server did not finish the registration flow. No verification was bypassed.', 'BETTER_REGISTRATION_UNSUPPORTED');
+    })();
+    try { return await registrationRun; } finally { registrationRun = null; }
   }
   async function logout() {
     stopSync();
     // request() captures the current Authorization header before its first
     // await. Clear the local session immediately while revocation runs once.
     const pending = session ? request('POST', '/logout', {}) : Promise.resolve();
-    session = null; verifiedSession = null; verificationPromise = null;
+    session = null; verifiedSession = null; verificationPromise = null; pendingRegistration = null;
     storageSet(SESSION_KEY, null); resetCaches(); emit({ type: 'session', session: null });
     await pending;
   }
@@ -466,8 +530,8 @@
     listeners.add(listener); startSync(); let closed = false;
     return () => { if (closed) return; closed = true; listeners.delete(listener); if (!listeners.size) stopSync(); };
   }
-  try { const saved = storageGet(SESSION_KEY); if (saved && validUser(saved.userId) && saved.userId.endsWith(':salix.host') && typeof saved.accessToken === 'string' && saved.accessToken) session = { userId: saved.userId, deviceId: String(saved.deviceId || ''), accessToken: saved.accessToken }; } catch {}
+  try { const saved = storageGet(SESSION_KEY); if (saved && validUser(saved.userId) && saved.userId.endsWith(':' + ACCOUNT_DOMAIN) && typeof saved.accessToken === 'string' && saved.accessToken) session = { userId: saved.userId, deviceId: String(saved.deviceId || ''), accessToken: saved.accessToken }; } catch {}
   try { const configured = globalThis.__BETTER_MATRIX_COMMUNITY__ || storageGet(COMMUNITY_KEY); if (configured) community = normalizeCommunity(configured, true); } catch {}
   try { for (const item of storageGet(IDS_KEY) || []) if (Array.isArray(item) && typeof item[0] === 'string' && item[0].length < 1500 && Number.isSafeInteger(item[1]) && item[1] > 0 && !reservedIds.has(item[1])) { savedIds.set(item[0], item[1]); reservedIds.set(item[1], item[0]); } } catch {}
-  globalThis.__betterMatrix = Object.freeze({ BASE, ROOM_NAMES, login, restore, whoami, logout, getSession: safeSession, me, createCommunity, setCommunity, getCommunity, exportCommunity: () => JSON.stringify(getCommunity(), null, 2), joinCommunity, listChannels, channels: listChannels, listMembers, members: listMembers, invite, getMessages, messages: getMessages, sendMessage, send: sendMessage, edit, editMessage: edit, remove, deleteMessage: remove, react, reactMessage: react, typing, search, subscribe, getCachedMessage: id => { try { const found = findMessage(id); return mapMessage(found.room, found.event); } catch { return null; } } });
+  globalThis.__betterMatrix = Object.freeze({ BASE, ROOM_NAMES, login, register, getRegistrationInfo, restore, whoami, logout, getSession: safeSession, me, createCommunity, setCommunity, getCommunity, exportCommunity: () => JSON.stringify(getCommunity(), null, 2), joinCommunity, listChannels, channels: listChannels, listMembers, members: listMembers, invite, getMessages, messages: getMessages, sendMessage, send: sendMessage, edit, editMessage: edit, remove, deleteMessage: remove, react, reactMessage: react, typing, search, subscribe, getCachedMessage: id => { try { const found = findMessage(id); return mapMessage(found.room, found.event); } catch { return null; } } });
 })();

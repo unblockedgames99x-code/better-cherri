@@ -11,6 +11,7 @@ import {patchRemoteProxy} from './patch-remote-proxy.mjs';
 import {patchTransportFactory} from './patch-remote-transport.mjs';
 import {patchRemoteMedia} from './patch-remote-media.mjs';
 import {patchMatrixIntegration} from './patch-matrix-integration.mjs';
+import {patchXmppIntegration} from './patch-xmpp-integration.mjs';
 
 const repo=path.resolve('work/cherri');
 const staged=path.resolve('work/remote-cherri');
@@ -22,6 +23,7 @@ source=patchChat(source);
 source=patchNavigation(source).source;
 source=patchRoomView(source);
 source=patchMatrixIntegration(source);
+source=patchXmppIntegration(source);
 source=patchRemoteProxy(source).source;
 source=patchTransportFactory(source);
 source=patchRemoteMedia(source).source;
@@ -39,6 +41,6 @@ fs.copyFileSync('work/better-cherri-rooms-bridge.js',path.join(staged,'b/better-
 fs.copyFileSync('work/better-remote-transport.js',path.join(staged,'b/better-remote-transport.js'));
 fs.copyFileSync('work/better-cherri-room-setup.js',path.join(staged,'b/better-cherri-room-setup.js'));
 if(fs.existsSync('work/better-p2p-chat.js'))fs.copyFileSync('work/better-p2p-chat.js',path.join(staged,'b/better-p2p-chat.js'));
-for(const file of ['better-matrix-client.js','better-matrix-bridge.js','better-matrix-ui.js'])if(fs.existsSync('work/'+file))fs.copyFileSync('work/'+file,path.join(staged,'b/'+file));
+for(const file of ['better-matrix-client.js','better-matrix-bridge.js','better-matrix-ui.js','better-xmpp-sdk.js','better-xmpp-client.js','better-xmpp-bridge.js','better-xmpp-ui.js'])if(fs.existsSync('work/'+file))fs.copyFileSync('work/'+file,path.join(staged,'b/'+file));
 fs.copyFileSync(path.join(repo,'LICENSE'),path.join(staged,'LICENSE'));
 console.log(JSON.stringify({staged,bytes:Buffer.byteLength(source),upstream:'https://cherrion.top',roomPrefix:'better-'}));
