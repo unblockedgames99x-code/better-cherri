@@ -19,7 +19,7 @@ if(!args.includes('--launcher-only')) {
   const app=await fs.readFile(path.resolve(root,appPath),'utf8');
   for(const [index,match] of [...app.matchAll(/<script>([\s\S]*?)<\/script>/g)].entries())new vm.Script(match[1],{filename:'better-app-'+index+'.js'});
   const fallback='https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@main/app.js';
-  const script=`/* Better Cherri 3.0.0; original Cherri chat. AGPL-3.0. Source and license in this repository. */
+  const script=`/* Better Cherri 3.0.1; original Cherri chat. AGPL-3.0. Source and license in this repository. */
 (()=>{'use strict';
 const loadedFrom=document.currentScript&&document.currentScript.src||'';
 const betterReleaseUrl=new RegExp(${JSON.stringify('^https://cdn[.]jsdelivr[.]net/gh/unblockedgames99x-code/better-cherri@(?:main|[a-f0-9]{40})/app[.]js$')}).test(loadedFrom)?loadedFrom:${JSON.stringify(fallback)};

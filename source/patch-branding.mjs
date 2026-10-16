@@ -9,7 +9,7 @@ export function patchBranding(source) {
   };
   once('XB="Cherri"', 'XB="Better Cherri"');
   once('document.title=g.title;', 'document.title=g.id==="none"?"Better Cherri":g.title;');
-  once('Py=`v${zy} \\xB7 ${pM}`', 'Py=`Better Cherri v${globalThis.__BETTER_CHERRI__?.version||"3.0.0"} · based on v${zy}`');
+  once('Py=`v${zy} \\xB7 ${pM}`', 'Py=`Better Cherri v${globalThis.__BETTER_CHERRI__?.version||"3.0.1"} · based on v${zy}`');
   // Remove the entire front-page link, including its icon and invitation text.
   const start = s.indexOf('(0,eA.jsxs)("a",{href:"https://discord.gg/hUYzETaQ9U"');
   if (start < 0) throw new Error('Discord link patch mismatch');

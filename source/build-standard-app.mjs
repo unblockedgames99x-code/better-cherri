@@ -40,7 +40,7 @@ for (const file of files) {
   scripts.push('<script>' + inline(code) + '</script>');
 }
 const setup = `
-window.__BETTER_CHERRI__={version:"3.0.0",mode:"remote",chatMode:"shared",proxyRequiresHostedMode:false};
+window.__BETTER_CHERRI__={version:"3.0.1",mode:"remote",chatMode:"shared",proxyRequiresHostedMode:false};
 window.__BETTER_CHERRI_CHAT_PROVIDER__="cherri";
 window.__BETTER_CHERRI_ASSETS__=${json(assetBase)};
 window.__BETTER_CHERRI_URL_BASE__="https://cherrion.top";

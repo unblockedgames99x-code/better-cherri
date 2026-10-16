@@ -4,6 +4,28 @@ import {fileURLToPath} from 'node:url';
 
 const CHERRI_ORIGIN = 'https://cherrion.top';
 
+// A normal click opens account services as a first-party page. The embedded
+// page remains available when a browser blocks that requested tab.
+export const standardNativeNavigation = String.raw`function betterCherriOpenOriginal(target){
+  if(globalThis.origin==="https://cherrion.top"||typeof target!=="string"||!/^cherri:\/\//i.test(target))return!1;
+  if(typeof navigator!=="undefined"&&navigator.userActivation&&!navigator.userActivation.isActive)return!1;
+  let url;
+  try{url=new URL("https://cherrion.top/"+target.slice(target.indexOf("://")+3))}catch{return!1}
+  if(!/^\/(?:chat|members|login|reset|profile|shop|achievements|mod|activity|assistant)\/?$/.test(url.pathname)&&!/^\/profile\/view\/[^/]+\/?$/.test(url.pathname))return!1;
+  url.hash="";
+  for(let key of [...url.searchParams.keys()])if(!["next","channel","page","q","tab","handle"].includes(key))url.searchParams.delete(key);
+  let next=url.searchParams.get("next");
+  if(next&&(!/^\/(?!\/)/.test(next)||/[?#]/.test(next)))url.searchParams.delete("next");
+  let child;
+  try{child=window.open(url.href,"_blank")}catch{return!1}
+  if(!child)return!1;
+  try{child.opener=null}catch{}
+  return!0;
+}
+`;
+
+export const standardSidebarClick = '()=>{if(betterCherriOpenOriginal(`cherri://${b.path}`))return;hA?(AA(hA.id),nA(`cherri://${b.path}`)):BB(`cherri://${b.path}`)}';
+
 // Account pages run inside Cherri's real origin. A static fork cannot grant
 // itself access to that origin's accounts or bypass its CORS policy.
 export const standardRouteView = String.raw`function d6({id:A}){
@@ -60,6 +82,10 @@ export function patchStandardCherri(input) {
     throw new Error('Build standard Cherri from the original bundle without private chat patches.');
   }
   replace('function d6({id:A}){let g=pkA[A];return(0,eA.jsx)(g,{})}', standardRouteView);
+  replace('function Vt(A,g){', standardNativeNavigation + 'function Vt(A,g){if(betterCherriOpenOriginal(A))return;');
+  const sidebarClick = 'onClick:()=>{hA?(AA(hA.id),nA(`cherri://${b.path}`)):BB(`cherri://${b.path}`)}';
+  if (source.split(sidebarClick).length !== 3) throw new Error('Original Cherri sidebar navigation anchors changed.');
+  source = source.split(sidebarClick).join('onClick:' + standardSidebarClick);
   replace(originalFetchRouter, standardFetchRouter);
   // The standalone shell must not mistake an old local token for a login in
   // the cross-origin frame. Native Cherri windows keep their original token.

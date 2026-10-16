@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {patchStandardCherri, standardFetchRouter, standardRouteView} from './patch-standard-cherri.mjs';
+import {patchStandardCherri, standardFetchRouter, standardRouteView, standardNativeNavigation, standardSidebarClick} from './patch-standard-cherri.mjs';
+import {patchNavigation} from './patch-nav.mjs';
 
 const original = await readFile(new URL('./upstream-bundle.js', import.meta.url), 'utf8');
 const patched = patchStandardCherri(original);
@@ -97,4 +98,58 @@ const storageContext=vm.createContext({pG:'cherri_settings_unpushed',c0:'cherri_
 vm.runInContext('var '+storageSource,storageContext);
 for (const key of ['session_token','better_cherri_session_token','better_cherri_remote_session_token','better_cherri_matrix_session_v1','better_cherri_xmpp_session_v1','better_cherri_matrix_event_ids_v1','better_cherri_xmpp_event_ids_v1','better_cherri_matrix_blocks:person','better_cherri_xmpp_blocks:person']) assert.equal(storageContext.sV(key),true,'Private legacy key exported: '+key);
 assert.equal(storageContext.sV('cherri_theme'),false);
+const withNavigation=patchStandardCherri(patchNavigation(original).source);
+const vtStart=withNavigation.indexOf('function Vt(A,g){');
+const vtEnd=withNavigation.indexOf('function cCA(){',vtStart);
+assert.ok(vtEnd>vtStart);
+const vtSource=withNavigation.slice(vtStart,vtEnd);
+function navigate({origin='https://unblockedgames99x-code.github.io',active=true,blocked=false,throws=false}={}) {
+  const opened=[],local=[],child={opener:{parent:true}};
+  const context=vm.createContext({origin,URL,navigator:{userActivation:{isActive:active}}});
+  context.window={parent:{},__cherriNavigate:target=>local.push(target),open(url,target){opened.push({url,target});if(throws)throw new Error('blocked');return blocked?null:child;}};
+  vm.runInContext(standardNativeNavigation+vtSource,context);
+  return {context,opened,local,child};
+}
+for(const target of ['chat','members','login','reset','profile','profile/view/somebody','shop','achievements','mod','activity','assistant']){
+  const test=navigate();
+  test.context.Vt('cherri://'+target+'?next=%2Fchat&tab=all',()=>assert.fail('No fallback after a successful open'));
+  assert.equal(test.opened.length,1);
+  assert.equal(test.opened[0].url,'https://cherrion.top/'+target+'?next=%2Fchat&tab=all');
+  assert.equal(test.opened[0].target,'_blank');
+  assert.equal(test.child.opener,null);
+  assert.equal(test.local.length,0);
+}
+for(const target of ['cherri://music','cherri://g','cherri://chat-extra','cherri://profile/view/person/extra','https://example.org/chat','fern://chat','/chat','cherri:////example.org/chat']){
+  const test=navigate();test.context.Vt(target,()=>{});
+  assert.equal(test.opened.length,0,target);
+  assert.equal(test.local[0],target);
+}
+for(const options of [{origin:'https://cherrion.top'},{active:false},{blocked:true},{throws:true}]){
+  const test=navigate(options);test.context.Vt('cherri://chat',()=>{});
+  assert.equal(test.local[0],'cherri://chat');
+  assert.equal(test.opened.length,options.blocked||options.throws?1:0);
+}
+const sensitive=navigate();
+sensitive.context.Vt('cherri://login?next=%2Fchat&token=secret&access_token=secret&session_token=secret&password=secret&username=secret&email=secret#token=secret',()=>{});
+assert.equal(sensitive.opened[0].url,'https://cherrion.top/login?next=%2Fchat');
+for(const next of ['https://example.org','//example.org','/chat?token=secret','/chat#secret']){
+  const test=navigate();test.context.Vt('cherri://login?next='+encodeURIComponent(next),()=>{});
+  assert.equal(test.opened[0].url,'https://cherrion.top/login');
+}
+const fallback=navigate({blocked:true});
+delete fallback.context.window.__cherriNavigate;
+let callbacks=0;
+fallback.context.Vt('cherri://chat',()=>callbacks++);
+assert.equal(callbacks,1);
+assert.equal(withNavigation.split('onClick:'+standardSidebarClick).length-1,2);
+for(const route of ['chat','members','music','g'])for(const blocked of [false,true])for(const existing of [false,true]){
+  const test=navigate({blocked}),actions=[];
+  Object.assign(test.context,{b:{path:route},hA:existing?{id:123}:null,AA:id=>actions.push(['select',id]),nA:url=>actions.push(['address',url]),BB:url=>actions.push(['new',url])});
+  vm.runInContext('globalThis.actualSidebarClick='+standardSidebarClick,test.context);
+  test.context.actualSidebarClick();
+  const intercepted=['chat','members'].includes(route);
+  assert.equal(test.opened.length,intercepted?1:0);
+  if(intercepted&&!blocked)assert.equal(actions.length,0);
+  else assert.equal(actions[0][0],existing?'select':'new');
+}
 console.log('Standard Cherri tests passed: original channels/auth/sockets, native-origin pages, private request isolation, public games/music transport.');
