@@ -22,7 +22,7 @@ if(!args.includes('--launcher-only')) {
   const fallback='https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@main/app.js';
   const helper=makeDownloadHelperSource(fallback).replace(`make(${JSON.stringify(fallback)}, community)`,'make(betterReleaseUrl, community)');
   if(!helper.includes('make(betterReleaseUrl, community)'))throw new Error('Download helper source changed.');
-  const script=`/* Better Cherri 2.1.0; AGPL-3.0. Source and license in this repository. */
+  const script=`/* Better Cherri 2.2.0; AGPL-3.0. Source and license in this repository. */
 (()=>{'use strict';
 const loadedFrom=document.currentScript&&document.currentScript.src||'';
 const betterReleaseUrl=new RegExp(${JSON.stringify('^https://cdn[.]jsdelivr[.]net/gh/unblockedgames99x-code/better-cherri@(?:main|[a-f0-9]{40})/app[.]js$')}).test(loadedFrom)?loadedFrom:${JSON.stringify(fallback)};
@@ -46,6 +46,9 @@ globalThis.__BETTER_CHERRI_APP_READY__=true;
   await fs.mkdir(path.join(repo,'source'),{recursive:true});
   for(const name of sources)await fs.copyFile(path.join(root,'work',name),path.join(repo,'source',name));
   await fs.copyFile(path.join(root,'work/better-xmpp-sdk.js'),path.join(repo,'source/better-xmpp-sdk.js'));
+  await fs.copyFile(path.join(root,'work/better-xmpp-schema.js'),path.join(repo,'source/better-xmpp-schema.js'));
+  await fs.copyFile(path.join(root,'work/better-xmpp-default-community.json'),path.join(repo,'source/better-xmpp-default-community.json'));
+  await fs.copyFile(path.join(root,'work/test-xmpp-schema.mjs'),path.join(repo,'source/test-xmpp-schema.mjs'));
   await fs.copyFile(path.join(root,'work/test-xmpp-sdk-compat.mjs'),path.join(repo,'source/test-xmpp-sdk-compat.mjs'));
   await fs.copyFile(path.join(root,'work/STROPHE-LICENSE.txt'),path.join(repo,'STROPHE-LICENSE.txt'));
   await fs.copyFile(path.join(root,'work/STROPHE-LICENSE.txt'),path.join(repo,'source/STROPHE-LICENSE.txt'));

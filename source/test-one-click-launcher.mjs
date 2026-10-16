@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {makeOneClickLauncher, makeDownloadHelperSource} from './make-one-click-launcher.mjs';
+import xmppSchema from './better-xmpp-schema.js';
 const cdn='https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@0123456789abcdef0123456789abcdef01234567/app.js';
-const config={rooms:{'better-general':'better-0123456789abcdef0123456789abcdef-general@chat.yax.im','better-games':'better-0123456789abcdef0123456789abcdef-games@chat.yax.im','better-music':'better-0123456789abcdef0123456789abcdef-music@chat.yax.im'},accessToken:'TOKEN_SECRET',password:'PASSWORD_SECRET',session:{token:'NESTED_SECRET'}};
-const expected={version:1,provider:'xmpp',server:'yax.im',name:'Better Cherri',rooms:config.rooms};
+const namespace='0123456789abcdef0123456789abcdef';
+const config={...xmppSchema.createDefault(namespace,'owner@yax.im'),accessToken:'TOKEN_SECRET',password:'PASSWORD_SECRET',session:{token:'NESTED_SECRET'}};
+const expected=xmppSchema.normalize(config);
+const legacy={version:1,provider:'xmpp',server:'yax.im',rooms:{'better-general':'better-'+namespace+'-general@chat.yax.im','better-games':'better-'+namespace+'-games@chat.yax.im','better-music':'better-'+namespace+'-music@chat.yax.im'}};
+const invalidCommunity=error=>error.code==='BETTER_COMMUNITY_INVALID';
 function run(html,{blocked=false,autoSeed=true}={}) {
   const matches=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];assert.equal(matches.length,1);
   const operations=[],scripts=[],timers=new Map(),listeners=new Map();const status={textContent:'',className:''};let click,now=0,nextTimer=1;
@@ -27,6 +31,8 @@ function run(html,{blocked=false,autoSeed=true}={}) {
   const f=run(html);
   assert.deepEqual(f.operations[0],['window.open','about:blank','_blank'],'Tab opens synchronously before other work.');
   assert.equal(f.child.opener,null);assert.deepEqual(JSON.parse(JSON.stringify(f.child.__BETTER_XMPP_COMMUNITY__)),expected);
+  assert.equal(Object.keys(f.child.__BETTER_XMPP_COMMUNITY__.rooms).length,13,'All normal Better Cherri channels use one v2 manifest.');
+  assert.equal(f.child.__BETTER_XMPP_COMMUNITY__.ownerJid,'owner@yax.im');
   assert.equal(f.child.document.title,'Better Cherri');assert.equal(f.child.document.documentElement.lang,'en');
   assert.equal(f.note.id,'better-launch-status');assert.match(f.note.textContent,/Loading Better Cherri/);
   assert.ok(!html.includes('child.document.open('));assert.ok(!html.includes('child.document.write('));
@@ -71,23 +77,35 @@ function run(html,{blocked=false,autoSeed=true}={}) {
   assert.equal(f.operations.length,1);assert.equal(f.child.__BETTER_XMPP_COMMUNITY__,undefined);
 }
 {
-  const html=makeOneClickLauncher(cdn,{name:'</script><script>alert(1)</script>',rooms:config.rooms});
+  const html=makeOneClickLauncher(cdn,{...config,name:'</script><script>alert(1)</script>'});
   assert.ok(!html.includes('<script>alert(1)</script>'));assert.ok(!html.includes('!evil:<script>'));
   const f=run(html);assert.equal(f.child.__BETTER_XMPP_COMMUNITY__.name,'Better Cherri');
-  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{...config.rooms,'better-general':'!evil:</script><script>'}}),TypeError);
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,rooms:{...config.rooms,general:'!evil:</script><script>'}}),invalidCommunity);
 }
 {
   for(const bad of ['http://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@main/app.js','https://evil.example/app.js','https://cdn.jsdelivr.net/gh/other/repo@main/app.js',cdn+'?token=x',cdn.replace('/app.js','/index.html')])assert.throws(()=>makeOneClickLauncher(bad),TypeError);
   assert.doesNotThrow(()=>makeOneClickLauncher(cdn.replace(/@[a-f0-9]{40}/,'@main')));
-  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{'better-general':'!one:salix.host'}}),TypeError);
-  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{'better-general':'!same:salix.host','better-games':'!same:salix.host','better-music':'!same:salix.host'}}),TypeError);
-  assert.throws(()=>makeOneClickLauncher(cdn,{...config,server:'evil.example'}),TypeError);
-  assert.throws(()=>makeOneClickLauncher(cdn,{...config,provider:'other'}),TypeError);
-  assert.throws(()=>makeOneClickLauncher(cdn,{...config,provider:'matrix',homeserver:'https://matrix.salix.host'}),TypeError,'Old provider configurations cannot be exported as XMPP communities.');
-  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{...config.rooms,'better-games':'better-fedcba9876543210fedcba9876543210-games@chat.yax.im'}}),TypeError,'All room IDs must share one community namespace.');
-  for(const bad of ['better-short-general@chat.yax.im','better-0123456789ABCDEF0123456789abcdef-general@chat.yax.im','better-0123456789abcdef0123456789abcdef-general@elsewhere.test'])assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{...config.rooms,'better-general':bad}}),TypeError,'Only the canonical secure namespace is exported.');
+  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{'better-general':'!one:salix.host'}}),invalidCommunity);
+  assert.throws(()=>makeOneClickLauncher(cdn,{rooms:{'better-general':'!same:salix.host','better-games':'!same:salix.host','better-music':'!same:salix.host'}}),invalidCommunity);
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,server:'evil.example'}),invalidCommunity);
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,provider:'other'}),invalidCommunity);
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,provider:'matrix',homeserver:'https://matrix.salix.host'}),invalidCommunity,'Old provider configurations cannot be exported as XMPP communities.');
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,rooms:{...config.rooms,general:'better-fedcba9876543210fedcba9876543210-general@chat.yax.im'}}),invalidCommunity,'All room IDs must share one community namespace.');
+  for(const bad of ['better-short-general@chat.yax.im','better-0123456789ABCDEF0123456789abcdef-general@chat.yax.im','better-0123456789abcdef0123456789abcdef-general@elsewhere.test'])assert.throws(()=>makeOneClickLauncher(cdn,{...config,rooms:{...config.rooms,general:bad}}),invalidCommunity,'Only the canonical secure namespace is exported.');
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,ownerJid:null}),invalidCommunity,'New v2 shared communities must declare their owner.');
+  assert.throws(()=>makeOneClickLauncher(cdn,{...config,rooms:{...config.rooms,shared:'anything'}}),invalidCommunity,'Unrecognized room names cannot enter exports.');
   const reconstructed=vm.runInNewContext('('+makeOneClickLauncher.toString()+')');
   assert.equal(reconstructed(cdn,config),makeOneClickLauncher(cdn,config),'Function.toString is self-contained for in-app downloads.');
+}
+{
+  const f=run(makeOneClickLauncher(cdn,legacy));
+  const exported=JSON.parse(JSON.stringify(f.child.__BETTER_XMPP_COMMUNITY__));
+  assert.deepEqual(exported,xmppSchema.normalize(legacy));
+  assert.equal(exported.version,2);assert.equal(exported.legacy,true);
+  assert.equal(exported.rooms.general,legacy.rooms['better-general']);
+  assert.equal(exported.rooms.games,legacy.rooms['better-games']);
+  assert.equal(exported.rooms['share-music'],legacy.rooms['better-music'],'Legacy music history is preserved exactly.');
+  assert.equal(Object.keys(exported.rooms).length,14,'Legacy games coexist with the normal channel template.');
 }
 {
   const blobs=[],links=[],revoked=[];let timer;
@@ -95,4 +113,4 @@ function run(html,{blocked=false,autoSeed=true}={}) {
   vm.runInContext(makeDownloadHelperSource(cdn),context);context.__BETTER_CHERRI_DOWNLOAD_LAUNCHER__(config);
   assert.equal(blobs.length,1);assert.ok(!blobs[0].parts[0].includes('SECRET'));assert.equal(links[0].download,'Better-Cherri-Launcher.html');assert.equal(links[0].clicked,true);assert.equal(links[0].removed,true);timer();assert.deepEqual(revoked,['blob:test']);
 }
-console.log('One-click launcher: synchronous about:blank, embedded classic CDN script, scoped room-only configuration, safe script escaping, visible failures, and download helper passed. No network requests.');
+console.log('One-click launcher: synchronous about:blank, embedded classic CDN script, one shared v2 schema and legacy history, safe exports and escaping, mounted-app readiness, visible failures, and download helper passed. No network requests.');

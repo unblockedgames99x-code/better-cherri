@@ -14,7 +14,9 @@ const sandbox = {
   WebSocket: class { constructor() { throw new Error('This audit must not open a socket.'); } }
 };
 vm.createContext(sandbox);
+vm.runInContext(await fs.readFile(new URL('./better-xmpp-schema.js', import.meta.url), 'utf8'), sandbox);
 vm.runInContext(await fs.readFile(new URL('./better-xmpp-sdk.js', import.meta.url), 'utf8'), sandbox);
+assert.equal(typeof sandbox.__betterXmppSchema?.normalizeRoomName, 'function');
 const S = sandbox.Strophe;
 assert.equal(typeof S.Connection, 'function');
 assert.equal(typeof sandbox.$build, 'function');

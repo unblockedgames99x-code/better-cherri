@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
+import xmppSchema from './better-xmpp-schema.js';
 
 // Small DOM fixture: behavior tests make no browser or network requests.
 class Element extends EventTarget {
-  constructor(tag) { super(); this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.value = ''; this._text = ''; this.disabled = false; this.hidden = false; }
+  constructor(tag) { super(); this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.value = ''; this._text = ''; this.disabled = false; this.hidden = false; this.open = false; }
   append(...nodes) { for (const node of nodes) { node.parentNode = this; this.children.push(node); } }
   replaceChildren(...nodes) { for (const node of this.children) node.parentNode = null; this.children = []; this._text = ''; this.append(...nodes); }
   remove() { if (this.parentNode) { this.parentNode.children = this.parentNode.children.filter(node => node !== this); this.parentNode = null; } }
@@ -17,15 +18,21 @@ class Element extends EventTarget {
   all() { return this.children.flatMap(node => [node, ...node.all()]); }
   focus() { this.focused = true; }
   select() { this.selected = true; }
+  showModal() { assert.equal(this.tagName, 'DIALOG'); this.open = true; this.showCount = (this.showCount || 0) + 1; }
+  close() { this.open = false; this.dispatchEvent(new Event('close')); }
 }
 class DetailEvent extends Event { constructor(type, options) { super(type); this.detail = options.detail; } }
 const source = await readFile(new URL('./better-xmpp-ui.js', import.meta.url), 'utf8');
-const cfg = {version:1,provider:'xmpp',server:'yax.im',name:'Better Cherri',rooms:{'better-general':'better-0123456789abcdef0123456789abcdef-general@chat.yax.im','better-games':'better-0123456789abcdef0123456789abcdef-games@chat.yax.im','better-music':'better-0123456789abcdef0123456789abcdef-music@chat.yax.im'}};
+const namespace='0123456789abcdef0123456789abcdef';
+const cfg=xmppSchema.createDefault(namespace,'owner@yax.im');
+const legacyCfg={version:1,provider:'xmpp',server:'yax.im',name:'Better Cherri',rooms:{'better-general':'better-'+namespace+'-general@chat.yax.im','better-games':'better-'+namespace+'-games@chat.yax.im','better-music':'better-'+namespace+'-music@chat.yax.im'}};
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function fixture(options = {}) {
-  let session = options.session ?? null, community = options.community ?? null;
+  let session = options.session ?? null, community = options.community ?? options.defaultCommunity ?? null;
   const calls = [], events = [], copied = [], downloads = [];
+  const listeners = new Set();
+  const gear = new Element('button'); gear.textContent = 'Invites & settings';
   const client = {
     getSession: () => clone(session), getCommunity: () => clone(community),
     getRegistrationInfo: () => options.registrationInfo ?? {providerName:'yax.im',usernameHint:'username@yax.im',tokenRequired:false,termsUrl:'https://yaxim.org/yax.im/tos/',privacyUrl:'https://yaxim.org/yax.im/privacy/'},
@@ -33,15 +40,16 @@ function fixture(options = {}) {
     register: async (username,password,token,registrationOptions) => { calls.push(['register',username,password,token,clone(registrationOptions)]); if (options.register) return options.register(); session={userId:'newmember@yax.im',deviceId:'newdevice',accessToken:'NEW_SESSION_SECRET'}; return clone(session); },
     logout: async () => { calls.push(['logout']); session=null; },
     createCommunity: async () => { calls.push(['create']); community=clone(cfg); return clone(community); },
-    setCommunity: value => { calls.push(['import',clone(value)]); if (!value.rooms || Object.keys(value.rooms).length !== 3) throw new Error('Three room IDs are required.'); community=clone(cfg); return clone(community); },
+    setCommunity: value => { calls.push(['import',clone(value)]); community=xmppSchema.normalize(value); return clone(community); },
     invite: async id => { calls.push(['invite',id]); return options.inviteResult ?? Object.keys(cfg.rooms).map(name => ({name,invited:true})); },
     joinCommunity: async () => { calls.push(['join']); return Object.keys(cfg.rooms).map(name => ({name,joined:true})); },
-    listMembers: async () => { calls.push(['members']); return []; }
+    listMembers: async () => { calls.push(['members']); return []; },
+    subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); }
   };
-  const context = vm.createContext({URL,document:{createElement:tag=>new Element(tag)},CustomEvent:DetailEvent,__betterXmpp:client,dispatchEvent:event=>{events.push(event);return true;},navigator:{clipboard:{writeText:async text=>copied.push(text)}},__BETTER_CHERRI_DOWNLOAD_LAUNCHER__:async config=>downloads.push(config),fetch:()=>{throw new Error('UI must not send its own network requests.');}});
+  const context = vm.createContext({URL,document:{createElement:tag=>new Element(tag),activeElement:gear},CustomEvent:DetailEvent,__betterXmpp:client,__betterXmppSchema:xmppSchema,dispatchEvent:event=>{events.push(event);return true;},navigator:{clipboard:{writeText:async text=>copied.push(text)}},__BETTER_CHERRI_DOWNLOAD_LAUNCHER__:async config=>downloads.push(config),fetch:()=>{throw new Error('UI must not send its own network requests.');}});
   vm.runInContext(source, context);
   const container = new Element('div');
-  return {container, calls, events, copied, downloads, ui:context.__betterXmppUI, getSession:()=>session, setSession:value=>{session=value;}};
+  return {container, calls, events, copied, downloads, gear, listeners, serverEvent:event=>{for(const listener of listeners)listener(event);}, ui:context.__betterXmppUI, getSession:()=>session, setSession:value=>{session=value;}};
 }
 const nodes = (f, tag) => f.container.all().filter(node => node.tagName === tag.toUpperCase());
 const byName = (f, name) => f.container.all().find(node => node.getAttribute('name') === name);
@@ -154,19 +162,26 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
 }
 {
   const f=fixture({session:{userId:'owner@yax.im'}}); f.ui.mountCommunity(f.container);
-  assert.deepEqual(f.calls,[]); assert.ok(btn(f,'Create private rooms'));
-  assert.equal(nodes(f,'details')[0].open,true);
+  assert.deepEqual(f.calls,[]); assert.ok(!btn(f,'Create private rooms'),'Shared rooms have no per-account setup action.');
+  const dialog=nodes(f,'dialog')[0];
+  assert.equal(dialog.open,false,'Community settings are hidden by default.');
+  assert.match(nodes(f,'style')[0].textContent,/\.bcm-community\{display:contents\}/);
+  assert.match(nodes(f,'style')[0].textContent,/\.bcm-dialog:not\(\[open\]\)\{display:none\}/,'Closed controls occupy no normal chat height.');
+  assert.equal(nodes(f,'details')[0].open,false,'Technical import details remain collapsed.');
   assert.ok(!btn(f,'Download community launcher'));
-  click(btn(f,'Create private rooms')); await tick();
-  assert.deepEqual(f.calls,[['create']]);
-  assert.equal(nodes(f,'details')[0].open,false,'Configured controls collapse to leave the original chat visible.');
-  assert.ok(!btn(f,'Create private rooms'));
-  assert.deepEqual(f.events.map(event=>event.type),['better-xmpp:community']);
+  assert.equal(f.ui.openCommunity(),true);assert.equal(dialog.open,true);
+  assert.equal(dialog.getAttribute('aria-labelledby'),nodes(f,'h2')[0].getAttribute('id'));
+  click(btn(f,'Close'));assert.equal(dialog.open,false);assert.equal(f.gear.focused,true,'Close returns focus to the original sidebar gear.');
+  f.gear.focused=false;f.ui.openCommunity();
+  const cancel=new Event('cancel',{cancelable:true});dialog.dispatchEvent(cancel);
+  assert.equal(cancel.defaultPrevented,true);assert.equal(dialog.open,false);assert.equal(f.gear.focused,true,'Escape returns focus to the gear.');
+  assert.deepEqual(f.calls,[],'Opening and closing settings never creates rooms or transmits account data.');
 }
 {
-  const dirty={...cfg,accessToken:'CONFIG_SECRET',password:'PASSWORD_SECRET',rooms:{...cfg.rooms,shared:'better-stock-general@chat.yax.im'}};
+  const dirty={...cfg,accessToken:'CONFIG_SECRET',password:'PASSWORD_SECRET',session:{token:'NESTED_SECRET'}};
   const f=fixture({session:{userId:'<img src=x onerror=alert(1)>',accessToken:'SESSION_SECRET'},community:dirty});
   f.ui.mountCommunity(f.container); assert.deepEqual(f.calls,[]);
+  f.ui.openCommunity();
   assert.ok(f.container.textContent.includes('<img src=x onerror=alert(1)>'));
   assert.equal(nodes(f,'img').length,0,'Untrusted IDs render only as text.');
   click(btn(f,'Copy configuration')); await tick();
@@ -178,20 +193,30 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   assert.ok(f.calls.some(call=>call[0]==='invite'&&call[1]==='friend@yax.im'));
   click(btn(f,'Accept room invitations')); await tick();
   assert.ok(f.calls.some(call=>call[0]==='join')); assert.ok(f.events.some(event=>event.type==='better-xmpp:community'));
+  assert.equal(nodes(f,'dialog')[0].open,true,'Settings remain open after a successful refresh.');
+  assert.ok(!f.gear.focused,'Refreshing an open dialog does not return focus prematurely.');
+  click(btn(f,'Close'));assert.equal(f.gear.focused,true,'The replacement dialog retains the original focus target.');
 }
 {
   const f=fixture({session:{userId:'member@yax.im'}}); f.ui.mountCommunity(f.container);
+  f.ui.openCommunity();
   byName(f,'community-config').value='{not json'; submit(form(f,'Import community configuration')); await tick();
   assert.equal(f.calls.length,0,'Invalid JSON is not sent to the client.');
   assert.ok(nodes(f,'div').some(node=>node.getAttribute('role')==='alert'));
-  byName(f,'community-config').value=JSON.stringify(cfg); submit(form(f,'Import community configuration')); await tick();
+  byName(f,'community-config').value=JSON.stringify(legacyCfg); submit(form(f,'Import community configuration')); await tick();
   assert.deepEqual(f.calls.map(call=>call[0]),['import'],'Import does not silently create or join rooms.');
   assert.equal(f.events[0].type,'better-xmpp:community');
+  const imported=f.events[0].detail.community;
+  assert.deepEqual(clone(imported),xmppSchema.normalize(legacyCfg));
+  assert.equal(imported.rooms.general,legacyCfg.rooms['better-general']);
+  assert.equal(imported.rooms.games,legacyCfg.rooms['better-games']);
+  assert.equal(imported.rooms['share-music'],legacyCfg.rooms['better-music'],'Legacy music retains its existing history address.');
+  assert.equal(nodes(f,'dialog')[0].open,true);
 }
 {
-  const f=fixture({session:{userId:'member@yax.im'},community:cfg,inviteResult:[{name:'better-general',invited:false,error:'The chat server is rate limiting this account. Try again in 5 seconds.'}]});
-  f.ui.mountCommunity(f.container);byName(f,'invite-user').value='friend@yax.im';submit(form(f,'Invite a member'));await tick();
-  assert.match(f.container.textContent,/better-general: The chat server is rate limiting/);
+  const f=fixture({session:{userId:'member@yax.im'},community:cfg,inviteResult:[{name:'general',invited:false,error:'The chat server is rate limiting this account. Try again in 5 seconds.'}]});
+  f.ui.mountCommunity(f.container);f.ui.openCommunity();byName(f,'invite-user').value='friend@yax.im';submit(form(f,'Invite a member'));await tick();
+  assert.match(f.container.textContent,/general: The chat server is rate limiting/);
   const firstStop=f.ui.mountAccount(f.container); f.ui.mountCommunity(f.container); firstStop();
   assert.ok(f.container.children.length>0,'An older cleanup cannot remove a newer mount.');
 }
@@ -202,11 +227,45 @@ const submit = node => { assert.ok(node, 'The requested form exists.'); node.dis
   assert.deepEqual(f.container.children,[chat],'Effect cleanup removes only its own nodes, preserving newly committed React chat.');
 }
 {
-  const mixed={...cfg,rooms:{...cfg.rooms,'better-games':'better-fedcba9876543210fedcba9876543210-games@chat.yax.im'}};
+  const mixed={...cfg,rooms:{...cfg.rooms,general:'better-fedcba9876543210fedcba9876543210-general@chat.yax.im'}};
   const f=fixture({session:{userId:'member@yax.im'},community:mixed});f.ui.mountCommunity(f.container);
   assert.ok(!btn(f,'Download community launcher'),'Mixed secure namespaces cannot be exported.');
-  const invalid={...cfg,rooms:{...cfg.rooms,'better-general':'better-short-general@chat.yax.im'}};
+  const invalid={...cfg,rooms:{...cfg.rooms,general:'better-short-general@chat.yax.im'}};
   const bad=fixture({session:{userId:'member@yax.im'},community:invalid});bad.ui.mountCommunity(bad.container);
   assert.ok(!btn(bad,'Download community launcher'),'Short noncanonical room namespaces are rejected.');
+  const unknown=fixture({session:{userId:'member@yax.im'},community:{...cfg,rooms:{...cfg.rooms,shared:'better-stock-general@chat.yax.im'}}});unknown.ui.mountCommunity(unknown.container);
+  assert.ok(!btn(unknown,'Download community launcher'),'Unexpected room keys are rejected by the shared schema.');
 }
-console.log('XMPP UI: native no-email signup, explicit password/terms/token actions, login, room creation/import/invitations, safe exports, errors, event refreshes, and async cleanup passed. No network requests.');
+{
+  const f=fixture({session:{userId:'member@yax.im'},defaultCommunity:cfg});
+  const stop=f.ui.mountCommunity(f.container),dialog=nodes(f,'dialog')[0];
+  assert.ok(btn(f,'Download community launcher'),'The client-provided embedded default is used without per-account setup.');
+  assert.ok(!f.container.textContent.includes('Connect your Better Cherri rooms'));
+  assert.equal(dialog.open,false);assert.deepEqual(f.calls,[]);
+  f.ui.openCommunity();const chat=new Element('article');f.container.append(chat);stop();
+  assert.equal(dialog.open,false);assert.deepEqual(f.container.children,[chat]);
+  assert.equal(f.ui.openCommunity(),false,'Unmounted controls cannot reopen a detached dialog.');
+}
+{
+  const f=fixture({session:{userId:'owner@yax.im'},defaultCommunity:cfg});
+  const stop=f.ui.mountCommunity(f.container),dialog=nodes(f,'dialog')[0];
+  assert.equal(f.listeners.size,1);
+  f.serverEvent({type:'status',connected:true,error:'The server could not save the private room configuration.'});
+  let alerts=nodes(f,'aside');assert.equal(alerts.length,1);assert.equal(alerts[0].getAttribute('role'),'alert');
+  assert.equal(dialog.open,false,'Bootstrap errors show without opening a setup panel.');
+  assert.ok(!f.gear.focused,'The alert does not steal keyboard focus.');
+  f.serverEvent({type:'status',connected:true,error:'The server could not save the private room configuration.'});
+  assert.equal(nodes(f,'aside')[0],alerts[0],'Repeated errors are deduplicated.');
+  click(btn(f,'Dismiss'));assert.equal(nodes(f,'aside').length,0);
+  f.serverEvent({type:'status',connected:true,error:'The server could not save the private room configuration.'});
+  assert.equal(nodes(f,'aside').length,0,'A dismissed repeated error stays dismissed until recovery.');
+  f.serverEvent({type:'community',community:cfg});
+  f.serverEvent({type:'status',connected:true,error:'The server could not save the private room configuration.'});
+  assert.equal(nodes(f,'aside').length,1,'A fresh failure after recovery is visible.');
+  click(btn(f,'Invites & settings'));assert.equal(dialog.open,true);
+  f.serverEvent({type:'session',session:null});assert.equal(nodes(f,'aside').length,0);
+  f.serverEvent({type:'status',connected:false,error:'Sign in again to reconnect.'});
+  assert.equal(nodes(f,'aside').length,1);stop();assert.equal(f.listeners.size,0);
+  f.serverEvent({type:'status',error:'Late failure'});assert.equal(f.container.children.length,0,'Cleanup unsubscribes and removes alerts.');
+}
+console.log('XMPP UI: native no-email signup, safe login, hidden accessible settings dialog, focus return, compact deduplicated error alerts, shared v2 and legacy configuration, invitations, exports, event refreshes, and cleanup passed. No network requests.');

@@ -1,27 +1,13 @@
+import xmppSchema from './better-xmpp-schema.js';
+
 /* A small CDN-backed launcher. Keep this function self-contained: the app also
  * embeds its source to download launchers containing public community IDs. */
-export function makeOneClickLauncher(cdnUrl, community = null) {
+function launcherTemplate(cdnUrl, community = null) {
   if (typeof cdnUrl !== 'string' || !/^https:\/\/cdn\.jsdelivr\.net\/gh\/unblockedgames99x-code\/better-cherri@(?:main|[a-f0-9]{40})\/app\.js$/.test(cdnUrl)) {
     throw new TypeError('Use the Better Cherri app.js link on jsDelivr.');
   }
-  let config = null;
-  if (community != null) {
-    if (typeof community !== 'object' || Array.isArray(community)) throw new TypeError('Provide a public Better Cherri room configuration.');
-    if (community.provider != null && community.provider !== 'xmpp') throw new TypeError('This launcher uses hosted Better Cherri chat rooms.');
-    if (community.server != null && community.server !== 'yax.im') throw new TypeError('This launcher uses the yax.im chat service.');
-    const rooms = {};
-    let namespace = null;
-    for (const name of ['better-general', 'better-games', 'better-music']) {
-      const id = community.rooms?.[name];
-      const match = typeof id === 'string' && new RegExp('^(better-[a-f0-9]{32})-' + name.slice(7) + '@chat\\.yax\\.im$').exec(id);
-      if (!match) throw new TypeError('A valid private chat address is required for ' + name + '.');
-      if (namespace && namespace !== match[1]) throw new TypeError('All channels must belong to the same Better Cherri community.');
-      namespace = match[1];
-      rooms[name] = id;
-    }
-    if (new Set(Object.values(rooms)).size !== 3) throw new TypeError('Each channel needs its own chat room.');
-    config = {version: 1, provider: 'xmpp', server: 'yax.im', name: 'Better Cherri', rooms};
-  }
+  const schema = __BETTER_SCHEMA_FACTORY_PLACEHOLDER__();
+  const config = community == null ? null : schema.normalize(community);
   const json = value => JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Better Cherri</title>
@@ -72,6 +58,10 @@ button.addEventListener('click',()=>{
   watchTimer=setTimeout(watch,0);
 });})();</script></body></html>`;
 }
+
+// Embed the one shared validator factory so downloaded launchers are also
+// self-contained. Validation logic is maintained only in better-xmpp-schema.js.
+export const makeOneClickLauncher = Function('return (' + launcherTemplate.toString().replace('__BETTER_SCHEMA_FACTORY_PLACEHOLDER__', '(' + xmppSchema.createSchema.toString() + ')') + ')')();
 
 export function makeDownloadHelperSource(cdnUrl) {
   // Validate the URL before embedding code. No session information is included.

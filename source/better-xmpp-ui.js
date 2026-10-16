@@ -6,8 +6,7 @@
   'use strict';
   const host = globalThis;
   const active = new WeakMap();
-  const names = ['better-general', 'better-games', 'better-music'];
-  const server = 'yax.im';
+  let communityControl = null, dialogCounter = 0;
   const css = `
   .bcm-root{font-family:var(--cherri-font,Inter,system-ui,sans-serif);color:var(--bright-text,#fff);font-size:14px;line-height:1.5;box-sizing:border-box}
   .bcm-root *{box-sizing:border-box}.bcm-root button,.bcm-root input,.bcm-root textarea{font:inherit}
@@ -21,12 +20,13 @@
   .bcm-root button.bcm-primary{background:var(--accent,#f17496);color:var(--bg,#12090d);border-color:transparent;font-weight:600}.bcm-root button:disabled{opacity:.55;cursor:wait}
   .bcm-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.bcm-small{font-size:12px!important}.bcm-status{margin-top:12px;padding:10px 12px;border-radius:12px;white-space:pre-line;overflow-wrap:anywhere;background:var(--bg-2,#1b1016)}
   .bcm-root label.bcm-check{display:flex;gap:9px;align-items:flex-start}.bcm-root .bcm-check input{width:16px;height:16px;margin-top:3px;padding:0;flex:none}.bcm-root .bcm-switch{margin-top:12px}
-  .bcm-status[hidden]{display:none}.bcm-status.bcm-error{color:#ffadb9;background:#3b101b}.bcm-community{padding:12px 18px;border-bottom:1px solid var(--border,#ffc8d238);background:var(--bg-1,#170c12)}
+  .bcm-status[hidden]{display:none}.bcm-status.bcm-error{color:#ffadb9;background:#3b101b}.bcm-community{display:contents}.bcm-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 40px);padding:0;border:1px solid var(--border,#ffc8d238);border-radius:18px;background:var(--bg-1,#170c12);color:var(--bright-text,#fff);overflow:auto}.bcm-dialog::backdrop{background:#000a;backdrop-filter:blur(3px)}.bcm-dialog-header{display:flex;gap:12px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border,#ffc8d238)}.bcm-dialog-header h2{flex:1}.bcm-dialog-body{padding:16px 20px}.bcm-dialog:not([open]){display:none}
   .bcm-community h2{font-size:15px;margin:0}.bcm-community summary{cursor:pointer;font-weight:600;color:var(--bright-text,#fff)}
   .bcm-community details>div{padding-top:10px}.bcm-community details{margin-top:8px}.bcm-community .bcm-identity{overflow-wrap:anywhere;margin:3px 0;font-size:12px}
   .bcm-community .bcm-tools{max-width:760px}.bcm-community form{margin:12px 0}.bcm-community .bcm-invite{grid-template-columns:minmax(180px,1fr) auto;align-items:end}
+  .bcm-toast{position:fixed;right:20px;bottom:20px;z-index:100000;width:min(420px,calc(100vw - 40px));padding:14px 16px;border:1px solid var(--accent,#f17496);border-radius:14px;background:var(--bg-1,#170c12);color:var(--bright-text,#fff);box-shadow:0 10px 35px #0008}.bcm-toast p{margin:0 0 10px;overflow-wrap:anywhere}.bcm-toast button{font-size:12px;padding:6px 10px}
   .bcm-root .bcm-break{overflow-wrap:anywhere}.bcm-root [hidden]{display:none!important}
-  @media(max-width:500px){.bcm-community{padding:10px 12px}.bcm-community .bcm-invite{grid-template-columns:1fr}}
+  @media(max-width:500px){.bcm-dialog-body{padding:12px}.bcm-community .bcm-invite{grid-template-columns:1fr}}
   `;
   function el(tag, text, attributes = {}) {
     const node = document.createElement(tag);
@@ -57,21 +57,15 @@
     } catch {}
     return el('span', text);
   }
-  function publicConfig(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    const rooms = {};
-    let namespace = null;
-    for (const name of names) {
-      const id = raw.rooms?.[name];
-      const match = typeof id === 'string' && new RegExp('^(better-[a-f0-9]{32})-' + name.slice(7) + '@chat\\.yax\\.im$').exec(id);
-      if (!match) continue;
-      if (namespace && namespace !== match[1]) return null;
-      namespace = match[1];
-      rooms[name] = id;
-    }
-    return {version: 1, provider: 'xmpp', server, name: 'Better Cherri', rooms};
+  function schema() {
+    if (!host.__betterXmppSchema) throw new Error('The community configuration is still loading.');
+    return host.__betterXmppSchema;
   }
-  function configured(config) { return !!config && names.every(name => config.rooms[name]); }
+  function publicConfig(raw) {
+    if (raw == null) return null;
+    try { return schema().normalize(raw); } catch { return null; }
+  }
+  function configured(config) { return !!config && schema().channels(config).length > 0; }
   function emit(type, detail) { host.dispatchEvent(new CustomEvent(type, {detail})); }
   function sessionEvents() {
     const session = safeSession();
@@ -91,9 +85,34 @@
     let alive = true, busy = false, accountMode = 'login', accountUsername = '', registrationPolicies = [];
     const style = el('style', css);
     const root = el('section', null, {class: 'bcm-root ' + (account ? 'bcm-account' : 'bcm-community')});
-    let status;
+    let status, dialog = null, returnFocus = null, toast = null, unsubscribe = null, lastStatusError = '', visibleStatusError = '';
+    const control = {open: openCommunity, close: closeCommunity};
+    if (!account) communityControl = control;
+    function focusedElement() {
+      const scope = container.getRootNode?.();
+      let focused = scope?.activeElement || document.activeElement;
+      while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+      return focused;
+    }
+    function restoreFocus() {
+      const target = returnFocus; returnFocus = null;
+      if (target && target.isConnected !== false) target.focus?.();
+    }
+    function openCommunity() {
+      if (!alive || !dialog) return false;
+      if (!dialog.open) { returnFocus = focusedElement(); dialog.showModal(); }
+      return true;
+    }
+    function closeCommunity() {
+      if (dialog?.open) dialog.close();
+      restoreFocus();
+    }
     const cleanup = () => {
       alive = false;
+      unsubscribe?.(); unsubscribe = null;
+      visibleStatusError = lastStatusError = '';
+      closeCommunity();
+      if (communityControl === control) communityControl = null;
       if (active.get(container) === cleanup) {
         active.delete(container);
         // React may already have committed the real chat into this slot before
@@ -134,6 +153,24 @@
       status = el('div', '', {class: 'bcm-status', role: 'status', 'aria-live': 'polite'});
       status.hidden = true; parent.append(status);
     }
+    function renderToast() {
+      toast?.remove(); toast = null;
+      if (!alive || !visibleStatusError) return;
+      toast = el('aside', null, {class: 'bcm-toast', role: 'alert'});
+      toast.append(el('p', visibleStatusError));
+      const row = el('div', null, {class: 'bcm-row'});
+      row.append(button('Invites & settings', openCommunity), button('Dismiss', () => { visibleStatusError = ''; renderToast(); }));
+      toast.append(row); root.append(toast);
+    }
+    function communityStatus(event) {
+      if (!alive) return;
+      if (event?.type === 'community' || event?.type === 'session') {
+        lastStatusError = visibleStatusError = ''; renderToast();
+      } else if (event?.type === 'status' && event.error) {
+        const message = errorText(event.error);
+        if (message !== lastStatusError) { lastStatusError = visibleStatusError = message; renderToast(); }
+      }
+    }
     function details(parent, title, open = false) {
       const node = el('details'); node.open = open;
       const inner = el('div'); node.append(el('summary', title), inner); parent.append(node);
@@ -151,7 +188,7 @@
       const session = safeSession();
       if (session) {
         card.append(el('h2', 'You’re signed in'), el('p', session.userId, {class: 'bcm-break'}));
-        card.append(el('p', 'Open Chatrooms to create or join your private Better Cherri community.'));
+        card.append(el('p', 'Open Chatrooms to join the Better Cherri community.'));
         const row = el('div', null, {class: 'bcm-row'});
         row.append(link('Open Chatrooms', '#/chat'), logoutButton()); card.append(row); addStatus(card);
         return;
@@ -198,7 +235,7 @@
           pass.value = ''; confirm.value = ''; token.value = '';
           run(() => client().register(username, password, registrationToken, options), () => {
             sessionEvents();
-            if (alive) { render(); show('Account created. Open Chatrooms to connect your private rooms.'); }
+            if (alive) { render(); show('Account created. Open Chatrooms to join Better Cherri.'); }
           }, error => {
             if (error?.code === 'BETTER_REGISTRATION_TERMS_REQUIRED' && Array.isArray(error.policies)) {
               registrationPolicies = error.policies.filter(item => item && typeof item.id === 'string' && typeof item.url === 'string').map(item => ({id: item.id, name: String(item.name || item.id), url: item.url}));
@@ -230,7 +267,7 @@
         pass.value = '';
         run(() => client().login(username, password), () => {
           sessionEvents();
-          if (alive) { render(); show('Signed in. Open Chatrooms to connect your rooms.'); }
+          if (alive) { render(); show('Signed in. Open Chatrooms to join Better Cherri.'); }
         });
       });
       card.append(form); addStatus(card);
@@ -239,29 +276,32 @@
       card.append(row, el('p', 'Chat is hosted free by ' + info.providerName + '. Create and sign in to your account here in Better Cherri. Sign-in lasts for this open tab.', {class: 'bcm-small'}));
     }
     function communityView() {
+      dialog = el('dialog', null, {class: 'bcm-dialog', 'aria-labelledby': 'better-community-title-' + (++dialogCounter)});
+      const header = el('div', null, {class: 'bcm-dialog-header'});
+      header.append(el('h2', 'Invites & community settings', {id: 'better-community-title-' + dialogCounter}));
+      const close = button('Close', closeCommunity); close.setAttribute('aria-label', 'Close community settings'); header.append(close);
+      const pane = el('div', null, {class: 'bcm-dialog-body'});
+      dialog.append(header, pane); root.append(dialog);
+      const currentDialog = dialog;
+      dialog.addEventListener('cancel', event => { event.preventDefault(); closeCommunity(); });
+      // A render can replace an open dialog while its native close event is
+      // still queued. Only the current dialog may return focus to the sidebar.
+      dialog.addEventListener('close', () => { if (dialog === currentDialog) restoreFocus(); });
       const session = safeSession();
       if (!session) {
-        root.append(el('h2', 'Private Better Cherri rooms'), el('p', 'Sign in to create or join rooms with saved messages. No email is required.'));
-        root.append(link('Sign in to chat', '#/login?next=/chat')); addStatus(root);
+        pane.append(el('h2', 'Private Better Cherri rooms'), el('p', 'Sign in to join rooms with saved messages. No email is required.'));
+        pane.append(link('Sign in to chat', '#/login?next=/chat')); addStatus(pane);
         return;
       }
       const config = publicConfig(client().getCommunity()), ready = configured(config);
-      root.append(el('h2', ready ? 'Better Cherri · private rooms' : 'Connect your Better Cherri rooms'));
-      root.append(el('p', 'Signed in as ' + session.userId, {class: 'bcm-identity'}));
-      const tools = details(root, ready ? 'Invites and community settings' : 'Set up or join your community', !ready);
+      pane.append(el('p', 'Signed in as ' + session.userId, {class: 'bcm-identity'}));
+      const tools = el('div'); pane.append(tools);
       tools.className = 'bcm-tools';
       tools.append(el('p', 'These rooms are invite-only. Message history is saved on yax.im and follows the host’s retention settings.', {class: 'bcm-small'}));
-      if (!ready) {
-        tools.append(button(config && Object.keys(config.rooms).length ? 'Finish creating private rooms' : 'Create private rooms', () => run(() => client().createCommunity(), result => {
-          const created = publicConfig(result);
-          communityEvent();
-          if (alive) { render(); show(configured(created) ? 'Your General, Games, and Music rooms are ready.' : 'Some rooms are still being created. Try again to finish setup.'); }
-        }), true));
-        tools.append(el('p', 'Create once as the community owner. Members import the same configuration and accept your invitation.', {class: 'bcm-small'}));
-      }
+      if (!ready) tools.append(el('p', 'The shared Better Cherri rooms are being prepared. Ask the community owner for an invitation.', {class: 'bcm-small'}));
       if (ready) {
         const invitation = el('form', null, {class: 'bcm-invite', 'aria-label': 'Invite a member'});
-        const label = el('label', 'Invite a member to all three rooms');
+        const label = el('label', 'Invite a member to all community channels');
         const input = el('input', null, {type: 'text', name: 'invite-user', placeholder: 'friend@yax.im', autocomplete: 'off', required: '', 'aria-label': 'Member chat address'});
         label.append(input); const submit = el('button', 'Invite', {type: 'submit', class: 'bcm-primary'}); invitation.append(label, submit);
         invitation.addEventListener('submit', event => {
@@ -269,7 +309,7 @@
           if (!id) { show('Enter the member’s full chat address.', true); return; }
           run(() => client().invite(id), result => {
             const failed = (result || []).filter(item => !item.invited);
-            show(failed.length ? failed.map(item => item.name + ': ' + (item.error || 'Invitation failed.')).join('\n') : 'Invited ' + id + ' to all three rooms.', failed.length > 0);
+            show(failed.length ? failed.map(item => item.name + ': ' + (item.error || 'Invitation failed.')).join('\n') : 'Invited ' + id + ' to the community channels.', failed.length > 0);
             if (!failed.length) input.value = '';
           });
         });
@@ -305,21 +345,27 @@
         event.preventDefault();
         run(() => client().setCommunity(JSON.parse(input.value)), () => {
           communityEvent();
-          if (alive) { render(); show('Configuration imported. Open Invites and community settings, then accept your room invitations.'); }
+          if (alive) { render(); show('Configuration imported. Open Invites & settings, then accept your room invitations.'); }
         });
       });
       importer.append(form);
       const row = el('div', null, {class: 'bcm-row'}); row.append(logoutButton()); tools.append(row);
-      addStatus(root);
+      addStatus(pane);
     }
     function render() {
       if (!alive) return;
+      const previousDialog = dialog, wasOpen = !!previousDialog?.open;
+      dialog = null;
+      if (wasOpen) previousDialog.close();
       root.replaceChildren();
       try { account ? accountView() : communityView(); }
       catch (error) { addStatus(root); show(errorText(error), true); }
+      if (wasOpen && dialog && alive) dialog.showModal();
+      if (!account) renderToast();
     }
     render();
+    if (!account) unsubscribe = client().subscribe?.(communityStatus) || null;
     return cleanup;
   }
-  host.__betterXmppUI = Object.freeze({mountAccount: container => mount(container, true), mountCommunity: container => mount(container, false)});
+  host.__betterXmppUI = Object.freeze({mountAccount: container => mount(container, true), mountCommunity: container => mount(container, false), openCommunity: () => communityControl?.open() || false});
 })();

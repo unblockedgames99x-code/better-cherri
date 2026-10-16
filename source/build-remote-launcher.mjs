@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeNativeBookmarklet } from './native-origin-bookmarklet.mjs';
 import { randomUUID, randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
 
 // This builder embeds the reviewed fork. It deliberately does not include the
 // upstream signed bootstrap/updater, which would replace these modifications.
@@ -28,6 +29,14 @@ if (!/^[\w.-]+$/.test(commit)) throw new Error('Invalid upstream asset ref.');
 const assetBase = `https://cdn.jsdelivr.net/gh/cherriunblocked/svg@${commit}/b/`;
 const jsonForScript = value => JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 const inlineScript = value => value.replace(/<\/script/gi, '<\\/script');
+let xmppDefaultCommunity = null;
+if (chatProvider === 'xmpp') {
+  const require = createRequire(import.meta.url);
+  const schemaModule = require('./better-xmpp-schema.js');
+  const schema = schemaModule.createSchema();
+  const configPath = path.resolve(option('--community-config', path.join(workspace, 'work/better-xmpp-default-community.json')));
+  xmppDefaultCommunity = schema.normalize(JSON.parse(await fs.readFile(configPath, 'utf8')));
+}
 
 const shell = await fs.readFile(path.join(source, 'b/index.html'), 'utf8');
 const cssFile = /"css":\[\["([^\"]+)"/.exec(shell)?.[1];
@@ -41,7 +50,7 @@ const bridge = await fs.readFile(path.join(source, 'b/better-cherri-bridge.js'),
 const transport = await fs.readFile(path.join(source, 'b/better-remote-transport.js'), 'utf8');
 const roomSetup = await fs.readFile(path.join(source, 'b/better-cherri-room-setup.js'), 'utf8');
 const matrixScripts = chatProvider === 'matrix' ? await Promise.all(['better-matrix-client.js','better-matrix-bridge.js','better-matrix-ui.js'].map(file=>fs.readFile(path.join(source,'b',file),'utf8'))) : [];
-const xmppScripts = chatProvider === 'xmpp' ? await Promise.all(['better-xmpp-sdk.js','better-xmpp-client.js','better-xmpp-bridge.js','better-xmpp-ui.js'].map(file=>fs.readFile(path.join(source,'b',file),'utf8'))) : [];
+const xmppScripts = chatProvider === 'xmpp' ? await Promise.all(['better-xmpp-schema.js','better-xmpp-sdk.js','better-xmpp-client.js','better-xmpp-bridge.js','better-xmpp-ui.js'].map(file=>fs.readFile(path.join(source,'b',file),'utf8'))) : [];
 let p2pRooms = [], p2pScript = '';
 if (chatProvider === 'chitchatter') {
   const configPath = path.resolve(option('--community-config', path.join(workspace, 'work/better-p2p-community.json')));
@@ -87,8 +96,9 @@ for (const file of scriptFiles) {
 }
 
 const setup = `
-window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'xmpp'?'2.1.0':chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
+window.__BETTER_CHERRI__={version:${jsonForScript(chatProvider === 'xmpp'?'2.2.0':chatProvider === 'matrix'?'2.0.0':chatProvider === 'chitchatter'?'1.3.0':'1.2.0')},mode:"remote",chatMode:${jsonForScript(chatMode)},proxyRequiresHostedMode:false};
 window.__BETTER_CHERRI_CHAT_PROVIDER__=${jsonForScript(chatProvider)};
+window.__BETTER_XMPP_DEFAULT_COMMUNITY__=${jsonForScript(xmppDefaultCommunity)};
 window.__BETTER_CHERRI_P2P_ROOMS__=${jsonForScript(p2pRooms)};
 window.__BETTER_CHERRI_NATIVE_ORIGIN__=window.__BETTER_CHERRI_CHAT_PROVIDER__==="cherri"&&globalThis.origin===${jsonForScript(apiBase)};
 window.__BETTER_CHERRI_ASSETS__=${jsonForScript(assetBase)};

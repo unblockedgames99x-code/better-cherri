@@ -35,6 +35,17 @@
     for (const n of names) if (typeof c[n] === 'function') return c[n](...args);
     throw fail(501, 'This chat feature is not available in this version.');
   }
+  function canonicalRoom(name) {
+    const normalize = client().normalizeRoomName;
+    return typeof normalize === 'function' ? normalize(String(name)) : String(name);
+  }
+  function canonicalEvent(event) {
+    if (!event || typeof event !== 'object') return null;
+    try {
+      const room = event.room ? canonicalRoom(event.room) : event.message?.room ? canonicalRoom(event.message.room) : null;
+      return {...event, ...(room ? {room} : {}), ...(event.message ? {message: {...event.message, ...(room ? {room} : {})}} : {})};
+    } catch { return null; }
+  }
   function context() {
     const s = safeSession();
     if (!s?.userId) throw fail(401, 'Sign in to your hosted Better Cherri chat account.');
@@ -45,7 +56,7 @@
       contexts.clear();
       ctx = {key, userId: String(s.userId), rooms: new Map(), index: new Map(), presence: {online: [String(s.userId)], idle: []}, unsubscribe: null};
       contexts.set(key, ctx);
-      if (typeof client().subscribe === 'function') ctx.unsubscribe = client().subscribe(event => { if (contextKey() === key) updateContext(ctx, event); });
+      if (typeof client().subscribe === 'function') ctx.unsubscribe = client().subscribe(event => { if (contextKey() === key) updateContext(ctx, canonicalEvent(event)); });
     }
     return ctx;
   }
@@ -55,9 +66,10 @@
     return cache;
   }
   function remember(ctx, room, messages) {
+    room = canonicalRoom(room);
     const cache = roomCache(ctx, room);
     for (const m of messages || []) if (m && typeof m.id === 'number' && Number.isFinite(m.id)) {
-      const row = {...m, room: m.room || room, reactions: Array.isArray(m.reactions) ? m.reactions : []};
+      const row = {...m, room, reactions: Array.isArray(m.reactions) ? m.reactions : []};
       cache.messages.set(row.id, row); ctx.index.set(row.id, {room, message: row});
     }
   }
@@ -85,7 +97,7 @@
     // relating to a message already collected from an earlier page.
     for (const id of [...cache.messages.keys()]) {
       const fresh = refresh(id);
-      if (fresh) { remember(ctx, room, [fresh]); if (collected.has(id)) collected.set(id, fresh); }
+      if (fresh) { remember(ctx, room, [fresh]); if (collected.has(id)) collected.set(id, cache.messages.get(id)); }
       else { cache.messages.delete(id); ctx.index.delete(id); collected.delete(id); }
     }
   }
@@ -99,7 +111,7 @@
       const result = await invoke(['getMessages', 'messages'], room, {...options, ...(cursor != null ? {before: cursor} : {})});
       const chunk = Array.isArray(result) ? result : result?.messages || [];
       remember(ctx, room, chunk);
-      for (const m of chunk) collected.set(m.id, m);
+      for (const m of chunk) if (roomCache(ctx, room).messages.has(m.id)) collected.set(m.id, roomCache(ctx, room).messages.get(m.id));
       refreshMessages(ctx, room, collected);
       before = Array.isArray(result) ? null : result?.before;
       exhausted = Array.isArray(result) || result?.exhausted === true || before == null || before === cursor || seen.has(before);
@@ -150,8 +162,18 @@
     const rows = await invoke(['listChannels', 'channels']);
     return Array.isArray(rows) ? rows : rows?.channels || [];
   };
-  async function actualRoom(name) {
-    if (!(await channels()).some(c => c.name === name)) throw fail(404, 'This private Better Cherri room is not joined.');
+  const categories = async () => {
+    const rows = await invoke(['listCategories', 'categories']);
+    return Array.isArray(rows) ? rows : rows?.categories || [];
+  };
+  async function actualRoom(value, write = false) {
+    const name = canonicalRoom(value);
+    const channel = (await channels()).find(c => c.name === name);
+    if (!channel) throw fail(404, 'This Better Cherri channel is not configured.');
+    if (typeof client().assertRoomAccess === 'function') await client().assertRoomAccess(name);
+    else if (channel.canRead !== true) throw fail(403, 'You need an invitation to read this private Better Cherri channel.');
+    if (write && channel.canPost !== true) throw fail(403, 'This Better Cherri channel is read only for your account.');
+    return name;
   }
   const storageKey = ctx => 'better_cherri_xmpp_blocks:' + ctx.userId;
   const blockIds = ctx => { try { const ids = JSON.parse(localStorage.getItem(storageKey(ctx)) || '[]'); return new Set(Array.isArray(ids) ? ids.map(String) : []); } catch { return new Set(); } };
@@ -183,7 +205,7 @@
       if (p === '/api/mod/access') return response({chat: false, audit: false, permissions: 0});
       if (p === '/api/me/chat-status') return response({banned: false, muted: false, reason: null, until: null});
       if (p === '/api/chat/channels' && method === 'GET') return response(await channels());
-      if (p === '/api/chat/categories' && method === 'GET') return response([{id: 1, name: 'Better Cherri', position: 0}]);
+      if (p === '/api/chat/categories' && method === 'GET') return response(await categories());
       if (p === '/api/roles/colors' || p === '/api/roles/top') return response({});
       if (p === '/api/roles') return response([]);
       if (p === '/api/members') return response(await members());
@@ -222,10 +244,10 @@
       if (p === '/api/presence/activity' || p === '/api/presence/activity/public') return response(method === 'GET' ? {at: Date.now(), activities: {}} : {ok: true});
       if (p === '/api/voice/rooms') return response({rooms: []});
       if (p === '/api/chat/search' && method === 'GET') {
-        const name = url.searchParams.get('in');
-        if (name && name !== 'all') await actualRoom(name);
+        let name = url.searchParams.get('in');
+        if (name && name !== 'all') name = await actualRoom(name);
         const result = await invoke(['search'], name && name !== 'all' ? name : null, url.searchParams.get('q') || '', 50);
-        let rows = Array.isArray(result) ? result : result?.results || [];
+        let rows = (Array.isArray(result) ? result : result?.results || []).map(message => ({...message, room: canonicalRoom(message.room)}));
         const from = url.searchParams.getAll('from'), mentions = url.searchParams.getAll('mentions');
         if (from.length) rows = rows.filter(m => from.includes(m.username));
         if (mentions.length) rows = rows.filter(m => mentions.every(name => String(m.content || '').includes('@' + name)));
@@ -238,11 +260,11 @@
       }
       const room = p.match(/^\/api\/chat\/channels\/([^/]+)\/(messages|typing|pins|bot|upload)$/);
       if (room) {
-        const name = decodeURIComponent(room[1]); await actualRoom(name);
+        const name = await actualRoom(decodeURIComponent(room[1]), room[2] === 'messages' && method === 'POST');
         if (room[2] === 'messages' && method === 'GET') return response(await messages(ctx, name, url.searchParams));
         if (room[2] === 'messages' && method === 'POST') {
           if (body.poll || body.gifId || body.track || body.playlist || body.partyInvite) throw fail(501, 'This hosted chat version currently supports text, replies, edits, and reactions.');
-          const row = await invoke(['sendMessage', 'send'], name, {content: String(body.content || ''), replyToId: body.replyToId ?? null});
+          const row = {...await invoke(['sendMessage', 'send'], name, {content: String(body.content || ''), replyToId: body.replyToId ?? null}), room: name};
           remember(ctx, name, [row]); return response(row, 201);
         }
         if (room[2] === 'typing' && method === 'POST') { await invoke(['typing'], name); return response({ok: true}); }
@@ -271,14 +293,15 @@
     const notify = url.pathname === '/api/notify/stream';
     if (!roomMatch && !notify) return null;
     let closed = false, opened = false, unsubscribe = null, ctx;
-    const room = roomMatch ? decodeURIComponent(roomMatch[1]) : null;
+    let room = roomMatch ? decodeURIComponent(roomMatch[1]) : null;
     const deliver = frame => { if (!closed) callbacks.onMessage?.(frame); };
     Promise.resolve().then(async () => {
       ctx = context();
-      if (room) await actualRoom(room);
+      if (room) room = await actualRoom(room);
       if (closed) return;
       unsubscribe = client().subscribe(event => {
         if (closed || contextKey() !== ctx.key) return;
+        event = canonicalEvent(event); if (!event) return;
         updateContext(ctx, event);
         if (notify) {
           if (event.type === 'message') deliver({type: 'channel_activity', room: event.room});
