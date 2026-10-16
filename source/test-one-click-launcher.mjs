@@ -7,8 +7,8 @@ const expected={version:1,provider:'matrix',homeserver:'https://matrix.salix.hos
 function run(html,{blocked=false}={}) {
   const matches=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];assert.equal(matches.length,1);
   const operations=[],scripts=[];const status={textContent:'',className:''};let click;
-  const note={textContent:'Loading…'};
-  const child={opener:{secret:'Do not retain'},document:{open(){operations.push('document.open');},write(text){operations.push(['document.write',text]);},close(){operations.push('document.close');},createElement(tag){operations.push(['create',tag]);return {};},getElementById(){return note;},body:{appendChild(script){operations.push('append');scripts.push(script);}}}};
+  let note={textContent:'Loading…'};
+  const child={opener:{secret:'Do not retain'},document:{documentElement:{},head:{appendChild(node){operations.push(['head.append',node]);}},open(){throw new Error('Parent document.open would replace about:blank URL.');},write(){throw new Error('Parent document.write is prohibited.');},close(){throw new Error('Parent document.close is unnecessary.');},createElement(tag){operations.push(['create',tag]);return {tagName:tag.toUpperCase(),attributes:{},setAttribute(name,value){this.attributes[name]=value;}};},getElementById(){return note;},body:{style:{},replaceChildren(node){operations.push('seed');note=node;},appendChild(script){operations.push('append');scripts.push(script);}}}};
   const context=vm.createContext({document:{getElementById:id=>id==='status'?status:{addEventListener(type,fn){assert.equal(type,'click');click=fn;}}},window:{open(url,target){operations.push(['window.open',url,target]);return blocked?null:child;}},localStorage:{getItem(){throw new Error('No login/session reads allowed.');}},fetch(){throw new Error('No pre-launch fetch allowed.');}});
   vm.runInContext(matches[0][1],context);
   assert.deepEqual(operations,[],'Opening the launcher does not open tabs or read auth.');
@@ -23,6 +23,9 @@ function run(html,{blocked=false}={}) {
   const f=run(html);
   assert.deepEqual(f.operations[0],['window.open','about:blank','_blank'],'Tab opens synchronously before other work.');
   assert.equal(f.child.opener,null);assert.deepEqual(JSON.parse(JSON.stringify(f.child.__BETTER_MATRIX_COMMUNITY__)),expected);
+  assert.equal(f.child.document.title,'Better Cherri');assert.equal(f.child.document.documentElement.lang,'en');
+  assert.equal(f.note.id,'better-launch-status');assert.match(f.note.textContent,/Loading Better Cherri/);
+  assert.ok(!html.includes('child.document.open('));assert.ok(!html.includes('child.document.write('));
   assert.equal(f.scripts.length,1);assert.equal(f.scripts[0].src,cdn);assert.equal(f.scripts[0].type,undefined,'CDN script is classic JavaScript.');
   f.scripts[0].onload();assert.match(f.status.textContent,/opened/);
   f.scripts[0].onerror();assert.match(f.status.textContent,/could not load from jsDelivr/);assert.equal(f.status.className,'error');assert.equal(f.note.textContent,f.status.textContent);
