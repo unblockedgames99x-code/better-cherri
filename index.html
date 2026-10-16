@@ -1,9 +1,9 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Better Cherri</title>
 <style>html,body{margin:0;min-height:100%;background:#0d090c;color:#fff;font:15px/1.5 Inter,system-ui,sans-serif}body{min-height:100vh;display:grid;place-items:center}.card{box-sizing:border-box;width:min(440px,calc(100% - 32px));padding:32px;border:1px solid #ffc8d238;border-radius:24px;background:#171116}h1{margin:0 0 10px;font-size:30px;letter-spacing:-1px}p{color:#c7aeb7;margin:0 0 24px}button{width:100%;border:0;border-radius:12px;padding:13px 18px;font:600 15px Inter,system-ui,sans-serif;background:#f17496;color:#170911;cursor:pointer}button:focus-visible{outline:3px solid #fff;outline-offset:4px}#status{margin:16px 0 0;font-size:13px;min-height:20px;overflow-wrap:anywhere}#status.error{color:#ffadb9}</style></head>
-<body><main class="card"><h1>Better Cherri</h1><p>Games, music, and private chat with saved messages.</p><button id="launch" type="button">Launch Better Cherri</button><p id="status" role="status" aria-live="polite"></p></main>
+<body><main class="card"><h1>Better Cherri</h1><p>Cherri's original chat, games and music.</p><button id="launch" type="button">Launch Better Cherri</button><p id="status" role="status" aria-live="polite"></p></main>
 <script>(()=>{'use strict';
-const cdn="https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@71cd68d2213b7d3c3a6e7602a7a9484b0ace57b4/app.js",community=null;
+const cdn="https://cdn.jsdelivr.net/gh/unblockedgames99x-code/better-cherri@dd40cdb06145c7e6ace610e62a2ed57e22a2b6dd/app.js";
 const status=document.getElementById('status'),button=document.getElementById('launch');
 button.addEventListener('click',()=>{
   if(button.disabled)return;
@@ -25,7 +25,6 @@ button.addEventListener('click',()=>{
       if(!doc.documentElement||!doc.head||!doc.body)return;
       if(seededDocument===doc&&seededScript&&seededScript.isConnected)return;
       seededDocument=doc;
-      if(community)child.__BETTER_XMPP_COMMUNITY__=community;
       doc.documentElement.lang='en';doc.title='Better Cherri';
       const charset=doc.createElement('meta');charset.setAttribute('charset','utf-8');
       const viewport=doc.createElement('meta');viewport.setAttribute('name','viewport');viewport.setAttribute('content','width=device-width,initial-scale=1');
@@ -33,7 +32,7 @@ button.addEventListener('click',()=>{
       doc.body.style.cssText='background:#0d090c;color:#fff;font:15px system-ui;padding:32px';
       const loading=doc.createElement('p');loading.id='better-launch-status';loading.setAttribute('role','status');loading.textContent='Loading Better Cherri…';doc.body.replaceChildren(loading);
       const script=doc.createElement('script');seededScript=script;script.src=cdn;script.async=true;
-      script.onload=done;
+      script.onload=()=>{try{if(child.document!==doc)return;}catch{}done();};
       script.onerror=()=>{try{if(child.document!==doc)return;}catch{}fail('Better Cherri could not load from jsDelivr. Check your connection and try again.');};
       doc.body.appendChild(script);
     }catch{fail('The launcher could not open Better Cherri. Allow pop-ups and try again.');}
@@ -43,6 +42,6 @@ button.addEventListener('click',()=>{
   child.addEventListener('load',onWindowLoad);
   timeoutTimer=setTimeout(()=>fail('Better Cherri is taking too long to load from jsDelivr. Check your connection and try again.'),45000);
   // The requested about:blank navigation may replace the initial document.
-  // Let it commit, and re-seed if that replacement discards the first script.
+  // Let it commit, then restore the script if that navigation discarded it.
   watchTimer=setTimeout(watch,0);
 });})();</script></body></html>
